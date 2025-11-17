@@ -1,4 +1,3 @@
-git+https://github.com/fontra/fontra.git
 git+https://github.com/fontra/fontra-compile.git
 git+https://github.com/fontra/fontra-rcjk.git
 git+https://github.com/fontra/fontra-glyphs.git
