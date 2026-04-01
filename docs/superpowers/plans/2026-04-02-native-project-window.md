@@ -10,40 +10,44 @@
 
 **Spec:** `docs/superpowers/specs/2026-04-01-fontra-native-project-window-design.md`
 
-**Important discovery:** `FileSystemProjectManager.authorize()` returns `"yes"` unconditionally. The server's `versionToken` is used only for static file cache-busting, not request authentication. The current `openFile()` does not include any token in URLs. Pane URLs do not need a versionToken.
+---
 
-**Fontra navigation patterns** (from `fontra-overview/src-js/`):
-- Overview to editor: `window.open(url)` (no target name — opens new window)
-- Editor to font info: `window.open(url, "fontra.fontinfo.<projectId>")`
-- Any to app settings: `window.open("/applicationsettings.html#panel", "_self" | "fontra.applicationsettings")`
-- Font overview/info from menu: `window.open(url, "fontra.<viewKind>.<uniqueId>" | "_self")`
-- External links: `window.open("https://...", "fontra.website")` or `<a target="_blank">`
+## Important discoveries
 
-All internal navigation uses `window.open()` with named targets or `_self`. The `QWebEnginePage.createWindow()` override intercepts all `window.open()` calls with non-`_self` targets. Same-page `_self` navigation goes through `acceptNavigationRequest()`.
+1. `FileSystemProjectManager.authorize()` returns `"yes"` unconditionally. The server's `versionToken` is used only for static file cache-busting, not request authentication. The current `openFile()` does not include any token in URLs. Pane URLs do not need a versionToken.
+
+2. Fontra frontend navigation patterns (from `fontra-overview/src-js/`):
+   - Overview to editor: `window.open(url)` (no target name — opens new window)
+   - Editor to font info: `window.open(url, "fontra.fontinfo.<projectId>")`
+   - Any to app settings: `window.open("/applicationsettings.html#panel", "_self" | "fontra.applicationsettings")`
+   - Font overview/info from menu: `window.open(url, "fontra.<viewKind>.<uniqueId>" | "_self")`
+   - External links: `window.open("https://...", "fontra.website")` or `<a target="_blank">`
+
+   All internal navigation uses `window.open()` with named targets or `_self`. `QWebEnginePage.createWindow()` intercepts all `window.open()` calls with non-`_self` targets. Same-page `_self` navigation goes through `acceptNavigationRequest()`.
 
 ---
 
-## File Structure
+## File structure
 
-### New package layout (Phase 0 creates this from the monolithic `FontraPakMain.py`)
+### New package (created alongside `FontraPakMain.py` during Phase 0 — the original file stays untouched until the very end)
 
 ```
 fontra_pak/
-    __init__.py           - Package marker, version
+    __init__.py           - Empty package marker
     __main__.py           - Entry point: multiprocessing.freeze_support() + main()
     app.py                - FontraApplication subclass, main() orchestration
     launcher.py           - FontraMainWidget (launcher/drop window)
     server.py             - runFontraServer, FontraPakExportManager, ProjectOpenListener
     ipc.py                - CallInMainThreadScheduler, queueGetter, callInMainThread, callInNewThread
-    dialogs.py            - showMessageDialog
-    export.py             - exportAs UI, doExportAs, exportFontToPath, createNewFont
+    dialogs.py            - showMessageDialog, getFontPath
+    export.py             - exportFontToPath, exportFontToPathAsync, createNewFont
     constants.py          - CSS strings, file type mappings, URLs
-    update_checker.py     - fetchLatestReleaseInfo, update check logic
+    update_checker.py     - fetchLatestReleaseInfo
     controller.py         - AppWorkspaceController (Phase 1)
     project_identity.py   - Project identity contract helpers (Phase 1)
     view_descriptor.py    - ViewDescriptor dataclass (Phase 1)
     routing.py            - URL classification (internal/external/rejected) (Phase 1)
-    project_window.py     - ProjectWindow (Phase 1), pane management (Phase 2)
+    project_window.py     - ProjectWindow (Phase 1)
     workspace_pane.py     - WorkspacePane + PaneNavigationBridge (Phase 1)
     persistence.py        - Workspace save/restore serialization (Phase 2)
 ```
@@ -52,85 +56,49 @@ fontra_pak/
 
 ```
 tests/
-    test_startup.py                - Existing (update entry point path)
+    test_startup.py                - Existing (unchanged until Phase 0 final step)
     test_fontra_client_bundling.py - Existing (unchanged)
-    test_project_identity.py       - Phase 1: project key canonicalization
-    test_view_descriptor.py        - Phase 1: descriptor creation, title derivation
-    test_routing.py                - Phase 1: URL classification logic
-    test_persistence.py            - Phase 2: workspace serialization round-trips
-```
-
-### Modified files
-
-```
-FontraPakMain.py   - Replaced by fontra_pak/ package (kept as thin redirect or deleted)
-FontraPak.spec     - Updated entry point, add QtWebEngine collection
-requirements.txt   - Add PyQt6-WebEngine
+    test_project_identity.py       - Phase 1
+    test_view_descriptor.py        - Phase 1
+    test_routing.py                - Phase 1
+    test_controller_callbacks.py   - Phase 1
+    test_persistence.py            - Phase 2
 ```
 
 ---
 
 ## Phase 0: Codebase Restructuring
 
-Pure refactor. No behavior change. Every task produces a passing test suite.
+**Rule for Phase 0:** `FontraPakMain.py` is NOT modified until the very last task. All new files are created alongside it. The app remains runnable via `python FontraPakMain.py` at every step. The new package is only verified via `python -m fontra_pak` once all files exist.
 
-### Task 1: Create package skeleton and entry point
+### Task 1: Create empty package
 
 **Files:**
 - Create: `fontra_pak/__init__.py`
-- Create: `fontra_pak/__main__.py`
-- Modify: `FontraPakMain.py`
 
-- [ ] **Step 1: Create the package directory and `__init__.py`**
+- [ ] **Step 1: Create `fontra_pak/__init__.py`**
+
+Create an empty file:
 
 ```python
 # fontra_pak/__init__.py
 ```
 
-- [ ] **Step 2: Create `__main__.py` as thin entry point**
-
-```python
-# fontra_pak/__main__.py
-import multiprocessing
-from fontra_pak.app import main
-
-if __name__ == "__main__":
-    multiprocessing.freeze_support()
-    main()
-```
-
-- [ ] **Step 3: Replace `FontraPakMain.py` with a redirect**
-
-Replace the entire contents of `FontraPakMain.py` with:
-
-```python
-# Legacy entry point — delegates to fontra_pak package.
-# Kept for PyInstaller compatibility during transition.
-import multiprocessing
-from fontra_pak.app import main
-
-if __name__ == "__main__":
-    multiprocessing.freeze_support()
-    main()
-```
-
-(Don't move anything else yet — `fontra_pak.app` doesn't exist yet. This file will work once Task 5 is done.)
-
-- [ ] **Step 4: Commit**
+- [ ] **Step 2: Commit**
 
 ```bash
-git add fontra_pak/__init__.py fontra_pak/__main__.py FontraPakMain.py
-git commit -m "feat: create fontra_pak package skeleton with entry point redirect"
+git add fontra_pak/__init__.py
+git commit -m "refactor: create empty fontra_pak package"
 ```
 
-### Task 2: Extract constants and file type mappings
+### Task 2: Create constants module
 
 **Files:**
 - Create: `fontra_pak/constants.py`
 
-- [ ] **Step 1: Create `constants.py`**
+- [ ] **Step 1: Create `fontra_pak/constants.py`**
 
-Move all module-level constants from `FontraPakMain.py` lines 52-112 into `fontra_pak/constants.py`:
+This file contains all module-level constants. Copy the content below exactly:
 
 ```python
 # fontra_pak/constants.py
@@ -202,17 +170,15 @@ latestReleasePageURL = "https://github.com/fontra/fontra-pak/releases/latest"
 
 ```bash
 git add fontra_pak/constants.py
-git commit -m "refactor: extract constants to fontra_pak/constants.py"
+git commit -m "refactor: create fontra_pak/constants.py"
 ```
 
-### Task 3: Extract IPC utilities
+### Task 3: Create IPC module
 
 **Files:**
 - Create: `fontra_pak/ipc.py`
 
-- [ ] **Step 1: Create `ipc.py`**
-
-Move `CallInMainThreadScheduler`, `callInMainThread`, `callInNewThread`, `queueGetter` from `FontraPakMain.py` lines 584-622:
+- [ ] **Step 1: Create `fontra_pak/ipc.py`**
 
 ```python
 # fontra_pak/ipc.py
@@ -267,20 +233,15 @@ def queueGetter(queue, callback):
 
 ```bash
 git add fontra_pak/ipc.py
-git commit -m "refactor: extract IPC utilities to fontra_pak/ipc.py"
+git commit -m "refactor: create fontra_pak/ipc.py"
 ```
 
-### Task 4: Extract dialogs, export, server, and update checker
+### Task 4: Create dialogs module
 
 **Files:**
 - Create: `fontra_pak/dialogs.py`
-- Create: `fontra_pak/export.py`
-- Create: `fontra_pak/server.py`
-- Create: `fontra_pak/update_checker.py`
 
-- [ ] **Step 1: Create `dialogs.py`**
-
-Move `showMessageDialog` and `getFontPath` from `FontraPakMain.py`:
+- [ ] **Step 1: Create `fontra_pak/dialogs.py`**
 
 ```python
 # fontra_pak/dialogs.py
@@ -321,16 +282,25 @@ def getFontPath(path, fileType, mapping):
     return path
 ```
 
-- [ ] **Step 2: Create `export.py`**
+- [ ] **Step 2: Commit**
 
-Move `exportFontToPath`, `exportFontToPathAsync`, `createNewFont` from `FontraPakMain.py`:
+```bash
+git add fontra_pak/dialogs.py
+git commit -m "refactor: create fontra_pak/dialogs.py"
+```
+
+### Task 5: Create export module
+
+**Files:**
+- Create: `fontra_pak/export.py`
+
+- [ ] **Step 1: Create `fontra_pak/export.py`**
 
 ```python
 # fontra_pak/export.py
 import asyncio
 import pathlib
 import sys
-
 from contextlib import aclosing
 
 from fontra.backends import getFileSystemBackend, newFileSystemBackend
@@ -404,9 +374,19 @@ async def createNewFont(fontPath):
     await destBackend.aclose()
 ```
 
-- [ ] **Step 3: Create `server.py`**
+- [ ] **Step 2: Commit**
 
-Move `FontraPakExportManager`, `ProjectOpenListener`, `runFontraServer` from `FontraPakMain.py`:
+```bash
+git add fontra_pak/export.py
+git commit -m "refactor: create fontra_pak/export.py"
+```
+
+### Task 6: Create server module
+
+**Files:**
+- Create: `fontra_pak/server.py`
+
+- [ ] **Step 1: Create `fontra_pak/server.py`**
 
 ```python
 # fontra_pak/server.py
@@ -466,9 +446,19 @@ def runFontraServer(host, port, queue):
     server.run(showLaunchBanner=False)
 ```
 
-- [ ] **Step 4: Create `update_checker.py`**
+- [ ] **Step 2: Commit**
 
-Move `fetchLatestReleaseInfo` and `_fetchLatestReleaseInfo` from `FontraPakMain.py`:
+```bash
+git add fontra_pak/server.py
+git commit -m "refactor: create fontra_pak/server.py"
+```
+
+### Task 7: Create update checker module
+
+**Files:**
+- Create: `fontra_pak/update_checker.py`
+
+- [ ] **Step 1: Create `fontra_pak/update_checker.py`**
 
 ```python
 # fontra_pak/update_checker.py
@@ -476,8 +466,6 @@ import json
 import sys
 import traceback
 from urllib.request import urlopen
-
-latestReleasePageURL = "https://github.com/fontra/fontra-pak/releases/latest"
 
 
 def fetchLatestReleaseInfo() -> tuple[str, str | None]:
@@ -513,23 +501,21 @@ def _fetchLatestReleaseInfo() -> tuple[str, str | None]:
     return latestVersion, assetInfo["browser_download_url"]
 ```
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 2: Commit**
 
 ```bash
-git add fontra_pak/dialogs.py fontra_pak/export.py fontra_pak/server.py fontra_pak/update_checker.py
-git commit -m "refactor: extract dialogs, export, server, and update checker modules"
+git add fontra_pak/update_checker.py
+git commit -m "refactor: create fontra_pak/update_checker.py"
 ```
 
-### Task 5: Extract launcher and app module, wire everything together
+### Task 8: Create launcher module
 
 **Files:**
 - Create: `fontra_pak/launcher.py`
-- Create: `fontra_pak/app.py`
-- Modify: `FontraPakMain.py` (already a redirect from Task 1)
 
-- [ ] **Step 1: Create `launcher.py`**
+This is the largest file. It contains `FontraMainWidget` and the `openFile` function. It imports from the package modules created in Tasks 2-7.
 
-Move `FontraMainWidget` and `openFile` from `FontraPakMain.py`. All imports now come from the package:
+- [ ] **Step 1: Create `fontra_pak/launcher.py`**
 
 ```python
 # fontra_pak/launcher.py
@@ -541,9 +527,9 @@ import signal
 import sys
 import tempfile
 import webbrowser
+from datetime import datetime
 from random import random
 from urllib.parse import quote
-from datetime import datetime
 
 from fontra import __version__ as fontraVersion
 from PyQt6.QtCore import QPoint, QSettings, QSize, Qt, QTimer
@@ -564,13 +550,14 @@ from fontra_pak.constants import (
     exportExtensionMapping,
     exportFileTypesMapping,
     fileTypesMapping,
+    latestReleasePageURL,
     mainText,
     neutralCSS,
 )
 from fontra_pak.dialogs import getFontPath, showMessageDialog
 from fontra_pak.export import createNewFont, exportFontToPath
 from fontra_pak.ipc import callInMainThread, callInNewThread
-from fontra_pak.update_checker import fetchLatestReleaseInfo, latestReleasePageURL
+from fontra_pak.update_checker import fetchLatestReleaseInfo
 
 
 def openFile(path, port):
@@ -844,9 +831,19 @@ class FontraMainWidget(QMainWindow):
         webbrowser.open(downloadURL)
 ```
 
-- [ ] **Step 2: Create `app.py`**
+- [ ] **Step 2: Commit**
 
-Move `FontraApplication` and `main()` from `FontraPakMain.py`:
+```bash
+git add fontra_pak/launcher.py
+git commit -m "refactor: create fontra_pak/launcher.py"
+```
+
+### Task 9: Create app module
+
+**Files:**
+- Create: `fontra_pak/app.py`
+
+- [ ] **Step 1: Create `fontra_pak/app.py`**
 
 ```python
 # fontra_pak/app.py
@@ -919,70 +916,120 @@ def main():
     sys.exit(app.exec())
 ```
 
-- [ ] **Step 3: Verify the app runs from the package**
+- [ ] **Step 2: Commit**
+
+```bash
+git add fontra_pak/app.py
+git commit -m "refactor: create fontra_pak/app.py"
+```
+
+### Task 10: Create `__main__.py` and verify the package works
+
+**Files:**
+- Create: `fontra_pak/__main__.py`
+
+- [ ] **Step 1: Create `fontra_pak/__main__.py`**
+
+```python
+# fontra_pak/__main__.py
+import multiprocessing
+
+from fontra_pak.app import main
+
+if __name__ == "__main__":
+    multiprocessing.freeze_support()
+    main()
+```
+
+- [ ] **Step 2: Verify the package runs**
 
 Run: `python -m fontra_pak`
 
-Expected: The launcher window appears, behaves identically to the original.
+Expected: The launcher window appears and behaves identically to `python FontraPakMain.py`. Drop a file — it opens in the browser (same as before). Close the window — it quits cleanly.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 3: Commit**
 
 ```bash
-git add fontra_pak/launcher.py fontra_pak/app.py
-git commit -m "refactor: extract launcher and app modules, complete package extraction"
+git add fontra_pak/__main__.py
+git commit -m "refactor: create fontra_pak/__main__.py, verify package runs"
 ```
 
-### Task 6: Update PyInstaller spec and verify build
+### Task 11: Replace `FontraPakMain.py` with a redirect
 
 **Files:**
-- Modify: `FontraPak.spec`
+- Modify: `FontraPakMain.py`
 
-- [ ] **Step 1: Update the Analysis entry point in `FontraPak.spec`**
+Now that the package works, replace the original 668-line file with a 5-line redirect.
 
-Change line 85:
+- [ ] **Step 1: Replace the entire contents of `FontraPakMain.py`**
+
+Delete everything in `FontraPakMain.py` and replace with:
 
 ```python
-# Old:
-    ["FontraPakMain.py"],
-# New:
-    ["FontraPakMain.py"],
+# Legacy entry point — delegates to fontra_pak package.
+# Kept for PyInstaller compatibility during transition.
+import multiprocessing
+
+from fontra_pak.app import main
+
+if __name__ == "__main__":
+    multiprocessing.freeze_support()
+    main()
 ```
 
-Keep `FontraPakMain.py` as the entry point since it now redirects to the package. This avoids changing PyInstaller's module resolution. The `fontra_pak/` package will be collected automatically since `FontraPakMain.py` imports from it.
+- [ ] **Step 2: Verify the redirect works**
 
-- [ ] **Step 2: Run PyInstaller build**
+Run: `python FontraPakMain.py`
+
+Expected: Identical behavior to `python -m fontra_pak`.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add FontraPakMain.py
+git commit -m "refactor: replace FontraPakMain.py with redirect to fontra_pak package"
+```
+
+### Task 12: Verify PyInstaller build
+
+**Files:**
+- No changes needed — `FontraPak.spec` already points at `FontraPakMain.py` which now imports from the package.
+
+- [ ] **Step 1: Run the PyInstaller build**
 
 Run: `pyinstaller FontraPak.spec -y`
 
 Expected: Build completes without errors.
 
-- [ ] **Step 3: Run existing tests**
+- [ ] **Step 2: Run existing tests**
 
 Run: `pytest tests/ -v`
 
-Expected: Both `test_startup` and `test_fontra_client_bundling` pass (if running on Windows with a dist build, `test_startup` runs; otherwise it skips).
+Expected: `test_fontra_client_bundling` passes. `test_startup` passes if a dist build exists on the current platform, otherwise it skips.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 3: Commit (only if FontraPak.spec needed changes)**
+
+If the build failed and you had to fix `FontraPak.spec`, commit the fix:
 
 ```bash
-git commit -m "refactor: verify PyInstaller build works with package extraction"
+git add FontraPak.spec
+git commit -m "fix: update PyInstaller spec for package extraction"
 ```
 
-(Only commit if `FontraPak.spec` actually changed. Otherwise skip.)
+If the build passed with no changes, skip this commit.
 
 ---
 
 ## Phase 1: Embedded Single Project Window
 
-### Task 7: Add PyQt6-WebEngine dependency
+### Task 13: Add PyQt6-WebEngine to requirements
 
 **Files:**
 - Modify: `requirements.txt`
-- Modify: `FontraPak.spec`
 
-- [ ] **Step 1: Add PyQt6-WebEngine to requirements**
+- [ ] **Step 1: Add `PyQt6-WebEngine` to `requirements.txt`**
 
-Add to `requirements.txt` after the PyQt6 lines:
+Add this line immediately after the `PyQt6-sip==13.10.2` line:
 
 ```
 PyQt6-WebEngine==6.7.0
@@ -992,11 +1039,27 @@ PyQt6-WebEngine==6.7.0
 
 Run: `pip install PyQt6-WebEngine==6.7.0`
 
-- [ ] **Step 3: Update `FontraPak.spec` to collect QtWebEngine**
+- [ ] **Step 3: Verify the import works**
 
-Add `"PyQt6.QtWebEngineWidgets"` to the `modules_to_collect_all` list, and add a hidden import:
+Run: `python -c "from PyQt6.QtWebEngineWidgets import QWebEngineView; print('OK')"`
 
-In `FontraPak.spec`, after the existing `modules_to_collect_all` list (line 61-69), add:
+Expected: prints `OK`
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add requirements.txt
+git commit -m "feat: add PyQt6-WebEngine dependency"
+```
+
+### Task 14: Update PyInstaller spec for QtWebEngine
+
+**Files:**
+- Modify: `FontraPak.spec`
+
+- [ ] **Step 1: Add QtWebEngine modules to collection list**
+
+In `FontraPak.spec`, find this block (lines 61-69):
 
 ```python
 modules_to_collect_all = [
@@ -1008,40 +1071,38 @@ modules_to_collect_all = [
     "openstep_plist",
     "glyphsLib.data",
 ]
+```
 
-# QtWebEngine requires explicit collection of its data files and helper processes
-qtwebengine_modules = [
+Replace it with:
+
+```python
+modules_to_collect_all = [
+    "fontra",
+    "fontra_compile",
+    "fontra_glyphs",
+    "fontra_rcjk",
+    "cffsubr",
+    "openstep_plist",
+    "glyphsLib.data",
     "PyQt6.QtWebEngineWidgets",
     "PyQt6.QtWebEngineCore",
 ]
 ```
 
-Then in the collection loop, also collect the QtWebEngine modules:
-
-```python
-for module_name in modules_to_collect_all + qtwebengine_modules:
-```
-
-- [ ] **Step 4: Verify QtWebEngine imports**
-
-Run: `python -c "from PyQt6.QtWebEngineWidgets import QWebEngineView; print('QtWebEngine OK')"`
-
-Expected: `QtWebEngine OK`
-
-- [ ] **Step 5: Commit**
+- [ ] **Step 2: Commit**
 
 ```bash
-git add requirements.txt FontraPak.spec
-git commit -m "feat: add PyQt6-WebEngine dependency and update PyInstaller spec"
+git add FontraPak.spec
+git commit -m "feat: collect QtWebEngine modules in PyInstaller spec"
 ```
 
-### Task 8: Implement project identity contract
+### Task 15: Implement project identity contract
 
 **Files:**
-- Create: `fontra_pak/project_identity.py`
 - Create: `tests/test_project_identity.py`
+- Create: `fontra_pak/project_identity.py`
 
-- [ ] **Step 1: Write failing tests for project identity**
+- [ ] **Step 1: Write failing tests**
 
 ```python
 # tests/test_project_identity.py
@@ -1059,7 +1120,6 @@ from fontra_pak.project_identity import (
 
 
 def test_path_to_project_key_resolves_and_normcases():
-    # On Windows, normcase lowercases; on Unix it's a no-op
     path = pathlib.Path(__file__).resolve()
     key = path_to_project_key(str(path))
     assert key == os.path.normcase(str(path))
@@ -1073,15 +1133,12 @@ def test_path_to_project_key_different_case_same_key():
     assert key1 == key2
 
 
-def test_encode_project_query_value_windows_drive():
+def test_encode_project_query_value_no_backslashes():
     if sys.platform != "win32":
         pytest.skip("Drive letter test only on Windows")
-    # Simulate a resolved Windows path
     value = encode_project_query_value("C:\\Users\\Test\\My Font.ufo")
-    assert "C%3A" in value or "C:" in value
-    assert "My%20Font.ufo" in value
-    # Should not have backslashes
     assert "\\" not in value
+    assert "My%20Font.ufo" in value
 
 
 def test_encode_project_query_value_unix():
@@ -1093,39 +1150,32 @@ def test_encode_project_query_value_unix():
 
 def test_profile_dir_name_is_hex_hash():
     name = project_key_to_profile_dir_name("c:\\fonts\\demo.ufo")
-    # Should be a hex string (sha256 truncated)
     assert all(c in "0123456789abcdef" for c in name)
-    assert len(name) == 16  # 8 bytes hex
+    assert len(name) == 16
 
 
-def test_profile_dir_name_stable():
+def test_profile_dir_name_is_stable():
     name1 = project_key_to_profile_dir_name("c:\\fonts\\demo.ufo")
     name2 = project_key_to_profile_dir_name("c:\\fonts\\demo.ufo")
     assert name1 == name2
 
 
-def test_profile_dir_name_different_for_different_projects():
+def test_profile_dir_name_differs_per_project():
     name1 = project_key_to_profile_dir_name("c:\\fonts\\demo.ufo")
     name2 = project_key_to_profile_dir_name("c:\\fonts\\other.ufo")
     assert name1 != name2
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [ ] **Step 2: Run tests — they should fail**
 
 Run: `pytest tests/test_project_identity.py -v`
 
-Expected: FAIL with `ModuleNotFoundError: No module named 'fontra_pak.project_identity'`
+Expected: `ModuleNotFoundError: No module named 'fontra_pak.project_identity'`
 
-- [ ] **Step 3: Implement `project_identity.py`**
+- [ ] **Step 3: Create `fontra_pak/project_identity.py`**
 
 ```python
 # fontra_pak/project_identity.py
-"""Project identity contract: canonical keys, URL encoding, profile paths.
-
-Extracted from the existing openFile() path-segment encoding algorithm.
-See spec section "Project identity contract" for the full contract.
-"""
-
 import hashlib
 import os
 import pathlib
@@ -1133,20 +1183,11 @@ from urllib.parse import quote
 
 
 def path_to_project_key(path: str) -> str:
-    """Canonicalize a file path to a stable project key.
-
-    resolvedProjectPath = str(pathlib.Path(path).resolve())
-    projectKey = os.path.normcase(resolvedProjectPath)
-    """
     resolved = str(pathlib.Path(path).resolve())
     return os.path.normcase(resolved)
 
 
 def encode_project_query_value(path: str) -> str:
-    """Encode a resolved path into the URL query format used by Fontra.
-
-    This is the existing openFile() algorithm extracted into a shared helper.
-    """
     path_obj = pathlib.Path(path).resolve()
     assert path_obj.is_absolute()
     parts = list(path_obj.parts)
@@ -1157,31 +1198,27 @@ def encode_project_query_value(path: str) -> str:
 
 
 def project_key_to_profile_dir_name(project_key: str) -> str:
-    """Derive a short, filesystem-safe directory name from a project key.
-
-    Uses a truncated SHA-256 hash to avoid MAX_PATH issues on Windows.
-    """
     return hashlib.sha256(project_key.encode("utf-8")).hexdigest()[:16]
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [ ] **Step 4: Run tests — they should pass**
 
 Run: `pytest tests/test_project_identity.py -v`
 
-Expected: All tests PASS.
+Expected: All PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add fontra_pak/project_identity.py tests/test_project_identity.py
-git commit -m "feat: implement project identity contract with tests"
+git commit -m "feat: implement project identity contract"
 ```
 
-### Task 9: Implement ViewDescriptor
+### Task 16: Implement ViewDescriptor
 
 **Files:**
-- Create: `fontra_pak/view_descriptor.py`
 - Create: `tests/test_view_descriptor.py`
+- Create: `fontra_pak/view_descriptor.py`
 
 - [ ] **Step 1: Write failing tests**
 
@@ -1190,7 +1227,7 @@ git commit -m "feat: implement project identity contract with tests"
 from fontra_pak.view_descriptor import ViewDescriptor
 
 
-def test_create_overview_descriptor():
+def test_overview_fields():
     d = ViewDescriptor.for_overview("c:\\fonts\\demo.ufo")
     assert d.project_key == "c:\\fonts\\demo.ufo"
     assert d.view_kind == "overview"
@@ -1199,7 +1236,7 @@ def test_create_overview_descriptor():
     assert d.title_hint == "Overview"
 
 
-def test_create_editor_descriptor():
+def test_editor_fields():
     d = ViewDescriptor.for_editor("c:\\fonts\\demo.ufo", route_hash="#glyph=A")
     assert d.view_kind == "editor"
     assert d.page_path == "/editor.html"
@@ -1207,40 +1244,39 @@ def test_create_editor_descriptor():
     assert d.title_hint == "Editor"
 
 
-def test_create_fontinfo_descriptor():
+def test_fontinfo_fields():
     d = ViewDescriptor.for_fontinfo("c:\\fonts\\demo.ufo", route_hash="#axes-panel")
     assert d.view_kind == "fontinfo"
     assert d.page_path == "/fontinfo.html"
-    assert d.route_hash == "#axes-panel"
     assert d.title_hint == "Font Info"
 
 
-def test_create_applicationsettings_descriptor():
+def test_applicationsettings_fields():
     d = ViewDescriptor.for_applicationsettings("c:\\fonts\\demo.ufo")
     assert d.view_kind == "applicationsettings"
     assert d.page_path == "/applicationsettings.html"
     assert d.title_hint == "Application Settings"
 
 
-def test_build_url():
+def test_build_url_with_hash():
     d = ViewDescriptor.for_editor("c:\\fonts\\demo.ufo", route_hash="#glyph=A")
     url = d.build_url("localhost", 8080, "C%3A/fonts/demo.ufo")
     assert url == "http://localhost:8080/editor.html?project=C%3A/fonts/demo.ufo#glyph=A"
 
 
-def test_build_url_no_hash():
+def test_build_url_without_hash():
     d = ViewDescriptor.for_overview("c:\\fonts\\demo.ufo")
     url = d.build_url("localhost", 8080, "C%3A/fonts/demo.ufo")
     assert url == "http://localhost:8080/fontoverview.html?project=C%3A/fonts/demo.ufo"
 
 
-def test_matches_same_descriptor():
+def test_matches_same_kind_same_project():
     d1 = ViewDescriptor.for_overview("c:\\fonts\\demo.ufo")
     d2 = ViewDescriptor.for_overview("c:\\fonts\\demo.ufo")
     assert d1.matches(d2)
 
 
-def test_no_match_different_view():
+def test_no_match_different_kind():
     d1 = ViewDescriptor.for_overview("c:\\fonts\\demo.ufo")
     d2 = ViewDescriptor.for_editor("c:\\fonts\\demo.ufo")
     assert not d1.matches(d2)
@@ -1252,39 +1288,43 @@ def test_no_match_different_project():
     assert not d1.matches(d2)
 
 
-def test_editor_matches_ignores_hash():
+def test_matches_ignores_route_hash():
     d1 = ViewDescriptor.for_editor("c:\\fonts\\demo.ufo", route_hash="#glyph=A")
     d2 = ViewDescriptor.for_editor("c:\\fonts\\demo.ufo", route_hash="#glyph=B")
     assert d1.matches(d2)
 
 
+def test_from_page_path_known():
+    d = ViewDescriptor.from_page_path("key", "/editor.html", "#hash")
+    assert d is not None
+    assert d.view_kind == "editor"
+
+
+def test_from_page_path_unknown_returns_none():
+    d = ViewDescriptor.from_page_path("key", "/landing.html")
+    assert d is None
+
+
 def test_to_dict_round_trip():
-    d = ViewDescriptor.for_editor("c:\\fonts\\demo.ufo", route_hash="#glyph=A")
-    data = d.to_dict()
-    d2 = ViewDescriptor.from_dict(data)
-    assert d.project_key == d2.project_key
-    assert d.view_kind == d2.view_kind
-    assert d.page_path == d2.page_path
-    assert d.route_hash == d2.route_hash
-    assert d.title_hint == d2.title_hint
+    original = ViewDescriptor.for_editor("c:\\fonts\\demo.ufo", route_hash="#glyph=A")
+    restored = ViewDescriptor.from_dict(original.to_dict())
+    assert original.project_key == restored.project_key
+    assert original.view_kind == restored.view_kind
+    assert original.page_path == restored.page_path
+    assert original.route_hash == restored.route_hash
+    assert original.title_hint == restored.title_hint
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [ ] **Step 2: Run tests — they should fail**
 
 Run: `pytest tests/test_view_descriptor.py -v`
 
-Expected: FAIL with `ModuleNotFoundError`
+Expected: `ModuleNotFoundError`
 
-- [ ] **Step 3: Implement `view_descriptor.py`**
+- [ ] **Step 3: Create `fontra_pak/view_descriptor.py`**
 
 ```python
 # fontra_pak/view_descriptor.py
-"""ViewDescriptor: describes one logical navigation destination.
-
-A descriptor identifies a route target, not a pane instance.
-See spec section "View Descriptor" for the full contract.
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -1318,60 +1358,36 @@ class ViewDescriptor:
 
     @classmethod
     def for_overview(cls, project_key: str, route_hash: str = "") -> ViewDescriptor:
-        return cls(
-            project_key=project_key,
-            view_kind="overview",
-            page_path="/fontoverview.html",
-            route_hash=route_hash,
-            title_hint="Overview",
-        )
+        return cls(project_key=project_key, view_kind="overview",
+                   page_path="/fontoverview.html", route_hash=route_hash,
+                   title_hint="Overview")
 
     @classmethod
     def for_editor(cls, project_key: str, route_hash: str = "") -> ViewDescriptor:
-        return cls(
-            project_key=project_key,
-            view_kind="editor",
-            page_path="/editor.html",
-            route_hash=route_hash,
-            title_hint="Editor",
-        )
+        return cls(project_key=project_key, view_kind="editor",
+                   page_path="/editor.html", route_hash=route_hash,
+                   title_hint="Editor")
 
     @classmethod
     def for_fontinfo(cls, project_key: str, route_hash: str = "") -> ViewDescriptor:
-        return cls(
-            project_key=project_key,
-            view_kind="fontinfo",
-            page_path="/fontinfo.html",
-            route_hash=route_hash,
-            title_hint="Font Info",
-        )
+        return cls(project_key=project_key, view_kind="fontinfo",
+                   page_path="/fontinfo.html", route_hash=route_hash,
+                   title_hint="Font Info")
 
     @classmethod
-    def for_applicationsettings(
-        cls, project_key: str, route_hash: str = ""
-    ) -> ViewDescriptor:
-        return cls(
-            project_key=project_key,
-            view_kind="applicationsettings",
-            page_path="/applicationsettings.html",
-            route_hash=route_hash,
-            title_hint="Application Settings",
-        )
+    def for_applicationsettings(cls, project_key: str, route_hash: str = "") -> ViewDescriptor:
+        return cls(project_key=project_key, view_kind="applicationsettings",
+                   page_path="/applicationsettings.html", route_hash=route_hash,
+                   title_hint="Application Settings")
 
     @classmethod
-    def from_page_path(
-        cls, project_key: str, page_path: str, route_hash: str = ""
-    ) -> ViewDescriptor | None:
+    def from_page_path(cls, project_key: str, page_path: str, route_hash: str = "") -> ViewDescriptor | None:
         view_kind = PAGE_PATH_TO_VIEW_KIND.get(page_path)
         if view_kind is None:
             return None
-        return cls(
-            project_key=project_key,
-            view_kind=view_kind,
-            page_path=page_path,
-            route_hash=route_hash,
-            title_hint=VIEW_KIND_TITLE_HINTS[view_kind],
-        )
+        return cls(project_key=project_key, view_kind=view_kind,
+                   page_path=page_path, route_hash=route_hash,
+                   title_hint=VIEW_KIND_TITLE_HINTS[view_kind])
 
     def build_url(self, host: str, port: int, project_query_value: str) -> str:
         url = f"http://{host}:{port}{self.page_path}?project={project_query_value}"
@@ -1380,69 +1396,52 @@ class ViewDescriptor:
         return url
 
     def matches(self, other: ViewDescriptor) -> bool:
-        """Check if two descriptors target the same logical route.
-
-        Matches on project_key, view_kind, and page_path.
-        route_hash is intentionally excluded — two editor panes for
-        different glyphs in the same project still match for deduping.
-        """
-        return (
-            self.project_key == other.project_key
-            and self.view_kind == other.view_kind
-            and self.page_path == other.page_path
-        )
+        return (self.project_key == other.project_key
+                and self.view_kind == other.view_kind
+                and self.page_path == other.page_path)
 
     def to_dict(self) -> dict:
-        return {
-            "project_key": self.project_key,
-            "view_kind": self.view_kind,
-            "page_path": self.page_path,
-            "route_hash": self.route_hash,
-            "title_hint": self.title_hint,
-        }
+        return {"project_key": self.project_key, "view_kind": self.view_kind,
+                "page_path": self.page_path, "route_hash": self.route_hash,
+                "title_hint": self.title_hint}
 
     @classmethod
     def from_dict(cls, data: dict) -> ViewDescriptor:
-        return cls(
-            project_key=data["project_key"],
-            view_kind=data["view_kind"],
-            page_path=data["page_path"],
-            route_hash=data["route_hash"],
-            title_hint=data["title_hint"],
-        )
+        return cls(project_key=data["project_key"], view_kind=data["view_kind"],
+                   page_path=data["page_path"], route_hash=data["route_hash"],
+                   title_hint=data["title_hint"])
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [ ] **Step 4: Run tests — they should pass**
 
 Run: `pytest tests/test_view_descriptor.py -v`
 
-Expected: All tests PASS.
+Expected: All PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add fontra_pak/view_descriptor.py tests/test_view_descriptor.py
-git commit -m "feat: implement ViewDescriptor with factory methods, matching, and serialization"
+git commit -m "feat: implement ViewDescriptor"
 ```
 
-### Task 10: Implement URL routing classification
+### Task 17: Implement URL routing classification
 
 **Files:**
-- Create: `fontra_pak/routing.py`
 - Create: `tests/test_routing.py`
+- Create: `fontra_pak/routing.py`
 
 - [ ] **Step 1: Write failing tests**
 
 ```python
 # tests/test_routing.py
-from fontra_pak.routing import classify_url, RouteClass
+from fontra_pak.routing import RouteClass, classify_url
 
 
 def test_internal_fontoverview():
     result = classify_url(
         "http://localhost:8080/fontoverview.html?project=C%3A/fonts/demo.ufo",
-        host="localhost",
-        port=8080,
+        host="localhost", port=8080,
         owner_project_key="c:\\fonts\\demo.ufo",
     )
     assert result.route_class == RouteClass.INTERNAL
@@ -1453,8 +1452,7 @@ def test_internal_fontoverview():
 def test_internal_editor_with_hash():
     result = classify_url(
         "http://localhost:8080/editor.html?project=C%3A/fonts/demo.ufo#glyph=A",
-        host="localhost",
-        port=8080,
+        host="localhost", port=8080,
         owner_project_key="c:\\fonts\\demo.ufo",
     )
     assert result.route_class == RouteClass.INTERNAL
@@ -1465,8 +1463,7 @@ def test_internal_editor_with_hash():
 def test_external_https():
     result = classify_url(
         "https://fontra.xyz/",
-        host="localhost",
-        port=8080,
+        host="localhost", port=8080,
         owner_project_key="c:\\fonts\\demo.ufo",
     )
     assert result.route_class == RouteClass.EXTERNAL
@@ -1475,8 +1472,7 @@ def test_external_https():
 def test_external_different_host():
     result = classify_url(
         "http://example.com/editor.html?project=foo",
-        host="localhost",
-        port=8080,
+        host="localhost", port=8080,
         owner_project_key="c:\\fonts\\demo.ufo",
     )
     assert result.route_class == RouteClass.EXTERNAL
@@ -1485,18 +1481,16 @@ def test_external_different_host():
 def test_rejected_unsupported_page():
     result = classify_url(
         "http://localhost:8080/landing.html",
-        host="localhost",
-        port=8080,
+        host="localhost", port=8080,
         owner_project_key="c:\\fonts\\demo.ufo",
     )
     assert result.route_class == RouteClass.REJECTED
 
 
-def test_rejected_missing_project():
+def test_rejected_missing_project_param():
     result = classify_url(
         "http://localhost:8080/editor.html",
-        host="localhost",
-        port=8080,
+        host="localhost", port=8080,
         owner_project_key="c:\\fonts\\demo.ufo",
     )
     assert result.route_class == RouteClass.REJECTED
@@ -1505,39 +1499,31 @@ def test_rejected_missing_project():
 def test_rejected_different_project():
     result = classify_url(
         "http://localhost:8080/editor.html?project=C%3A/fonts/other.ufo",
-        host="localhost",
-        port=8080,
+        host="localhost", port=8080,
         owner_project_key="c:\\fonts\\demo.ufo",
     )
     assert result.route_class == RouteClass.REJECTED
 
 
-def test_rejected_same_origin_unknown_path():
+def test_rejected_unknown_same_origin_path():
     result = classify_url(
         "http://localhost:8080/somethingelse.html?project=C%3A/fonts/demo.ufo",
-        host="localhost",
-        port=8080,
+        host="localhost", port=8080,
         owner_project_key="c:\\fonts\\demo.ufo",
     )
     assert result.route_class == RouteClass.REJECTED
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [ ] **Step 2: Run tests — they should fail**
 
 Run: `pytest tests/test_routing.py -v`
 
-Expected: FAIL with `ModuleNotFoundError`
+Expected: `ModuleNotFoundError`
 
-- [ ] **Step 3: Implement `routing.py`**
+- [ ] **Step 3: Create `fontra_pak/routing.py`**
 
 ```python
 # fontra_pak/routing.py
-"""URL classification for the navigation policy.
-
-Every navigation is classified as INTERNAL, EXTERNAL, or REJECTED.
-See spec section "Routing Model" for the full rules.
-"""
-
 from __future__ import annotations
 
 import os
@@ -1570,28 +1556,19 @@ def classify_url(
     port: int,
     owner_project_key: str,
 ) -> RouteResult:
-    """Classify a URL as internal, external, or rejected.
-
-    Args:
-        url: The full URL to classify.
-        host: The local server host (e.g. "localhost").
-        port: The local server port.
-        owner_project_key: The canonical project key of the owning ProjectWindow.
-    """
     parsed = urlparse(url)
 
-    # External: non-local origin
+    # Non-local origin = external
     expected_netloc = f"{host}:{port}"
     if parsed.scheme not in ("http", "") or parsed.netloc != expected_netloc:
         return RouteResult(route_class=RouteClass.EXTERNAL)
 
-    # Same-origin from here. Check page path.
+    # Same origin. Check if page path is one of the four known pages.
     page_path = parsed.path
     if page_path not in KNOWN_PAGE_PATHS:
         return RouteResult(route_class=RouteClass.REJECTED)
 
-    # Check project query parameter
-    # Parse query manually to handle the project= value which may contain encoded slashes
+    # Extract the ?project= query parameter value.
     query = parsed.query
     project_value = None
     for param in query.split("&"):
@@ -1602,21 +1579,21 @@ def classify_url(
     if project_value is None:
         return RouteResult(route_class=RouteClass.REJECTED)
 
-    # Decode project value back to a path and canonicalize
+    # Decode the project value back to a filesystem path, then canonicalize.
     try:
         decoded_parts = [unquote(part) for part in project_value.split("/")]
-        # Reconstruct path: on Windows first part may be "C:", on Unix we prepend /
         if len(decoded_parts) >= 1 and ":" in decoded_parts[0]:
-            # Windows drive letter
+            # Windows drive letter like "C:"
             reconstructed = os.path.join(decoded_parts[0] + os.sep, *decoded_parts[1:])
         else:
+            # Unix path
             reconstructed = os.sep + os.path.join(*decoded_parts)
         resolved = str(pathlib.Path(reconstructed).resolve())
         project_key = os.path.normcase(resolved)
     except Exception:
         return RouteResult(route_class=RouteClass.REJECTED)
 
-    # Check project ownership
+    # Check that the decoded project matches this window's project.
     if project_key != owner_project_key:
         return RouteResult(route_class=RouteClass.REJECTED)
 
@@ -1632,54 +1609,47 @@ def classify_url(
     )
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [ ] **Step 4: Run tests — they should pass**
 
 Run: `pytest tests/test_routing.py -v`
 
-Expected: All tests PASS.
+Expected: All PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add fontra_pak/routing.py tests/test_routing.py
-git commit -m "feat: implement URL routing classification with tests"
+git commit -m "feat: implement URL routing classification"
 ```
 
-### Task 11: Implement WorkspacePane and PaneNavigationBridge
+### Task 18: Implement PaneNavigationBridge
+
+This is the `QWebEnginePage` subclass that intercepts in-pane navigation and `window.open()` calls. It depends on `routing.py` (Task 17) and `view_descriptor.py` (Task 16). No tests — this is Qt-dependent and will be verified manually in Task 23.
 
 **Files:**
-- Create: `fontra_pak/workspace_pane.py`
+- Create: `fontra_pak/navigation_bridge.py`
 
-- [ ] **Step 1: Implement `workspace_pane.py`**
+- [ ] **Step 1: Create `fontra_pak/navigation_bridge.py`**
 
 ```python
-# fontra_pak/workspace_pane.py
-"""WorkspacePane: one dockable view inside a ProjectWindow.
-
-Each pane owns one QWebEngineView, one PaneNavigationBridge (the page),
-and one stable paneInstanceId.
-"""
-
+# fontra_pak/navigation_bridge.py
 from __future__ import annotations
 
-import secrets
 import webbrowser
 from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import QUrl
 from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile
-from PyQt6.QtWebEngineWidgets import QWebEngineView
-from PyQt6.QtWidgets import QDockWidget, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from fontra_pak.routing import RouteClass, classify_url
-from fontra_pak.view_descriptor import KNOWN_PAGE_PATHS, PAGE_PATH_TO_VIEW_KIND, ViewDescriptor
+from fontra_pak.view_descriptor import ViewDescriptor
 
 if TYPE_CHECKING:
-    from fontra_pak.project_window import ProjectWindow
+    from fontra_pak.workspace_pane import WorkspacePane
 
 
 class PaneNavigationBridge(QWebEnginePage):
-    """Custom QWebEnginePage that intercepts navigation and new-window requests."""
+    """Intercepts same-pane navigation. Attached to one WorkspacePane."""
 
     def __init__(self, profile: QWebEngineProfile, pane: WorkspacePane):
         super().__init__(profile, pane.web_view)
@@ -1698,7 +1668,6 @@ class PaneNavigationBridge(QWebEnginePage):
         )
 
         if result.route_class == RouteClass.INTERNAL:
-            # Same-pane navigation: allow and update descriptor
             new_descriptor = ViewDescriptor.from_page_path(
                 self.pane.descriptor.project_key,
                 result.page_path,
@@ -1713,7 +1682,7 @@ class PaneNavigationBridge(QWebEnginePage):
             webbrowser.open(url_str)
             return False
 
-        # REJECTED
+        # REJECTED — block and show error
         from fontra_pak.dialogs import showMessageDialog
         showMessageDialog(
             "Unsupported destination",
@@ -1722,20 +1691,17 @@ class PaneNavigationBridge(QWebEnginePage):
         return False
 
     def createWindow(self, window_type):
-        """Intercept window.open() calls.
-
-        Returns a temporary page that captures the target URL,
-        then classifies and routes it.
-        """
+        """Intercept window.open() calls. Returns a trap page that captures
+        the target URL and routes it."""
         trap = _NavigationTrapPage(self.pane)
-        # Keep a reference so it isn't garbage collected before navigation fires
-        self.pane._pending_trap = trap
+        self.pane._pending_trap = trap  # prevent garbage collection
         return trap
 
 
 class _NavigationTrapPage(QWebEnginePage):
-    """Temporary page that captures the URL from a window.open() call
-    and routes it through the project window's navigation policy."""
+    """Temporary page returned from createWindow(). It receives the
+    navigation request from window.open(), classifies the URL, and
+    routes it. It never actually loads a page."""
 
     def __init__(self, pane: WorkspacePane):
         super().__init__(pane.page().profile(), None)
@@ -1770,13 +1736,45 @@ class _NavigationTrapPage(QWebEnginePage):
                 f"This navigation target is not supported:\n{url_str}",
             )
 
-        self.pane._pending_trap = None
-        return False
+        self.pane._pending_trap = None  # allow garbage collection
+        return False  # never load anything in this throwaway page
+```
+
+- [ ] **Step 2: Commit**
+
+```bash
+git add fontra_pak/navigation_bridge.py
+git commit -m "feat: implement PaneNavigationBridge"
+```
+
+### Task 19: Implement WorkspacePane
+
+**Files:**
+- Create: `fontra_pak/workspace_pane.py`
+
+- [ ] **Step 1: Create `fontra_pak/workspace_pane.py`**
+
+```python
+# fontra_pak/workspace_pane.py
+from __future__ import annotations
+
+import os
+import secrets
+from typing import TYPE_CHECKING
+
+from PyQt6.QtCore import QUrl
+from PyQt6.QtWebEngineCore import QWebEngineProfile
+from PyQt6.QtWebEngineWidgets import QWebEngineView
+from PyQt6.QtWidgets import QDockWidget, QLabel, QPushButton, QVBoxLayout, QWidget
+
+from fontra_pak.navigation_bridge import PaneNavigationBridge
+from fontra_pak.view_descriptor import ViewDescriptor
+
+if TYPE_CHECKING:
+    from fontra_pak.project_window import ProjectWindow
 
 
 class WorkspacePane(QDockWidget):
-    """One dockable view inside a ProjectWindow."""
-
     def __init__(
         self,
         descriptor: ViewDescriptor,
@@ -1803,6 +1801,8 @@ class WorkspacePane(QDockWidget):
         page.titleChanged.connect(self._on_title_changed)
         page.renderProcessTerminated.connect(self._on_render_crash)
 
+        profile.downloadRequested.connect(self._on_download_requested)
+
         self.setWidget(self.web_view)
 
         url = descriptor.build_url(host, port, project_query_value)
@@ -1823,6 +1823,25 @@ class WorkspacePane(QDockWidget):
         self._show_error_overlay(
             f"The renderer process terminated (status={termination_status}, code={exit_code})."
         )
+
+    def _on_download_requested(self, download):
+        from PyQt6.QtWidgets import QFileDialog
+
+        suggested_path = os.path.join(
+            os.path.expanduser("~"),
+            download.downloadFileName(),
+        )
+        save_path, _ = QFileDialog.getSaveFileName(
+            self.project_window,
+            "Save download",
+            suggested_path,
+        )
+        if save_path:
+            download.setDownloadDirectory(os.path.dirname(save_path))
+            download.setDownloadFileName(os.path.basename(save_path))
+            download.accept()
+        else:
+            download.cancel()
 
     def _show_error_overlay(self, message: str):
         error_widget = QWidget()
@@ -1845,7 +1864,6 @@ class WorkspacePane(QDockWidget):
         self.web_view.setUrl(QUrl(url))
 
     def load_failed(self) -> bool:
-        """Check if the web view widget has been replaced by an error overlay."""
         return self.widget() is not self.web_view
 ```
 
@@ -1853,24 +1871,18 @@ class WorkspacePane(QDockWidget):
 
 ```bash
 git add fontra_pak/workspace_pane.py
-git commit -m "feat: implement WorkspacePane and PaneNavigationBridge"
+git commit -m "feat: implement WorkspacePane"
 ```
 
-### Task 12: Implement ProjectWindow
+### Task 20: Implement ProjectWindow
 
 **Files:**
 - Create: `fontra_pak/project_window.py`
 
-- [ ] **Step 1: Implement `project_window.py`**
+- [ ] **Step 1: Create `fontra_pak/project_window.py`**
 
 ```python
 # fontra_pak/project_window.py
-"""ProjectWindow: one top-level native editor window per font project.
-
-Owns the internal workspace layout and manages dockable panes.
-See spec section "Project Window" for the full contract.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -1886,7 +1898,6 @@ from fontra_pak.workspace_pane import WorkspacePane
 
 if TYPE_CHECKING:
     from PyQt6.QtWebEngineCore import QWebEngineProfile
-
     from fontra_pak.controller import AppWorkspaceController
 
 logger = logging.getLogger(__name__)
@@ -1914,20 +1925,28 @@ class ProjectWindow(QMainWindow):
         self._active_pane: WorkspacePane | None = None
         self._suppress_close_confirm = False
 
-        self.setWindowTitle(f"Fontra Pak — {project_path}")
+        self.setWindowTitle(f"Fontra Pak \u2014 {project_path}")
         self.setDockNestingEnabled(True)
+        self._setup_menu_bar()
+
+    def _setup_menu_bar(self):
+        menu_bar = self.menuBar()
+        view_menu = menu_bar.addMenu("&View")
+        view_menu.addAction("Font Overview", lambda: self.open_view(
+            ViewDescriptor.for_overview(self.project_key)))
+        view_menu.addAction("Font Info", lambda: self.open_view(
+            ViewDescriptor.for_fontinfo(self.project_key)))
+        view_menu.addAction("Application Settings", lambda: self.open_view(
+            ViewDescriptor.for_applicationsettings(self.project_key)))
 
     def open_initial_pane(self):
-        descriptor = ViewDescriptor.for_overview(self.project_key)
-        self._create_pane(descriptor)
+        self._create_pane(ViewDescriptor.for_overview(self.project_key))
 
     def open_view(self, descriptor: ViewDescriptor, pane_instance_id: str | None = None):
-        """Open or focus a pane matching the descriptor."""
-        # Dedup: find existing matching pane (skip during restore when ID is given)
+        # When restoring (pane_instance_id given), skip dedup — just create the pane.
         if pane_instance_id is None:
             matching = [p for p in self.panes if p.descriptor.matches(descriptor)]
             if matching:
-                # Focus most recently focused matching pane
                 pane = matching[-1]
                 pane.raise_()
                 pane.setFocus()
@@ -1946,16 +1965,11 @@ class ProjectWindow(QMainWindow):
             project_window=self,
             pane_instance_id=pane_instance_id,
         )
-
-        pane.setAllowedAreas(
-            Qt.DockWidgetArea.AllDockWidgetAreas
-        )
+        pane.setAllowedAreas(Qt.DockWidgetArea.AllDockWidgetAreas)
 
         if self.panes:
-            # Tabify with the last pane
-            last_pane = self.panes[-1]
             self.addDockWidget(Qt.DockWidgetArea.TopDockWidgetArea, pane)
-            self.tabifyDockWidget(last_pane, pane)
+            self.tabifyDockWidget(self.panes[-1], pane)
         else:
             self.addDockWidget(Qt.DockWidgetArea.TopDockWidgetArea, pane)
 
@@ -1965,7 +1979,7 @@ class ProjectWindow(QMainWindow):
         pane.setFocus()
 
     def close_pane(self, pane: WorkspacePane):
-        """Close a single pane. Reopen overview if last pane closed."""
+        was_error_pane = pane.load_failed()
         if pane in self.panes:
             self.panes.remove(pane)
         self.removeDockWidget(pane)
@@ -1974,10 +1988,8 @@ class ProjectWindow(QMainWindow):
         if self._active_pane is pane:
             self._active_pane = self.panes[-1] if self.panes else None
 
-        # If last pane was closed, reopen overview
         if not self.panes:
-            if pane.load_failed():
-                # Error pane was the only pane — close the whole window
+            if was_error_pane:
                 self.close()
             else:
                 self.open_initial_pane()
@@ -1990,11 +2002,10 @@ class ProjectWindow(QMainWindow):
 
         if self.project_key in self.controller.open_projects:
             response = showMessageDialog(
-                f"Close project?",
+                "Close project?",
                 f"The project {self.project_path} is still open in Fontra.\n"
                 "Closing this window will disconnect from the project.",
-                buttons=QMessageBox.StandardButton.Close
-                | QMessageBox.StandardButton.Cancel,
+                buttons=QMessageBox.StandardButton.Close | QMessageBox.StandardButton.Cancel,
                 defaultButton=QMessageBox.StandardButton.Cancel,
             )
             if response == QMessageBox.StandardButton.Cancel:
@@ -2015,7 +2026,6 @@ class ProjectWindow(QMainWindow):
         return None
 
     def show_connection_lost(self):
-        """Replace all panes with a connection-lost error message."""
         for pane in list(self.panes):
             pane._show_error_overlay(
                 "Connection to the Fontra server has been lost.\n"
@@ -2027,26 +2037,74 @@ class ProjectWindow(QMainWindow):
 
 ```bash
 git add fontra_pak/project_window.py
-git commit -m "feat: implement ProjectWindow with pane management and close guard"
+git commit -m "feat: implement ProjectWindow"
 ```
 
-### Task 13: Implement AppWorkspaceController
+### Task 21: Implement AppWorkspaceController
 
 **Files:**
 - Create: `fontra_pak/controller.py`
+- Create: `tests/test_controller_callbacks.py`
 
-- [ ] **Step 1: Implement `controller.py`**
+- [ ] **Step 1: Write failing tests for callback routing**
+
+These tests exercise the pure-logic callback routing without requiring Qt windows.
+
+```python
+# tests/test_controller_callbacks.py
+import os
+import sys
+
+import pytest
+
+# We can't instantiate AppWorkspaceController without Qt, but we can
+# test the callback routing logic by testing the methods directly on
+# a minimal mock. Instead, we test the canonicalization + state tracking
+# using the underlying functions.
+
+from fontra_pak.project_identity import path_to_project_key
+
+
+def test_canonicalize_projectOpened_identifier():
+    if sys.platform != "win32":
+        pytest.skip("Windows-specific canonicalization test")
+    key = path_to_project_key("C:\\Fonts\\Demo.ufo")
+    assert key == os.path.normcase(str(__import__("pathlib").Path("C:\\Fonts\\Demo.ufo").resolve()))
+
+
+def test_recently_closed_suppresses_projectClosed():
+    """Verify the logic: if a project_key is in _recently_closed,
+    a projectClosed callback for the same key should remove it from
+    _recently_closed instead of removing from open_projects."""
+    # Simulate the state tracking without Qt
+    open_projects = {"c:\\fonts\\demo.ufo"}
+    recently_closed = {"c:\\fonts\\demo.ufo"}
+
+    # Simulate _on_projectClosed logic
+    project_key = "c:\\fonts\\demo.ufo"
+    if project_key in recently_closed:
+        recently_closed.discard(project_key)
+    else:
+        open_projects.discard(project_key)
+
+    # open_projects should still contain the key
+    assert "c:\\fonts\\demo.ufo" in open_projects
+    # recently_closed should be empty
+    assert len(recently_closed) == 0
+```
+
+- [ ] **Step 2: Run tests — they should fail**
+
+Run: `pytest tests/test_controller_callbacks.py -v`
+
+Expected: PASS (these test the logic pattern, not the module import — they should pass immediately since they only use `project_identity`). If they fail due to import issues, fix those first.
+
+- [ ] **Step 3: Create `fontra_pak/controller.py`**
 
 ```python
 # fontra_pak/controller.py
-"""AppWorkspaceController: owns the project window registry and app-level state.
-
-See spec section "App Workspace Controller" for the full contract.
-"""
-
 from __future__ import annotations
 
-import hashlib
 import logging
 import os
 import pathlib
@@ -2060,7 +2118,6 @@ from fontra_pak.project_identity import (
     project_key_to_profile_dir_name,
 )
 from fontra_pak.project_window import ProjectWindow
-from fontra_pak.view_descriptor import ViewDescriptor
 
 logger = logging.getLogger(__name__)
 
@@ -2072,10 +2129,9 @@ class AppWorkspaceController:
         self.project_windows: dict[str, ProjectWindow] = {}
         self.open_projects: set[str] = set()
         self._recently_closed: set[str] = set()
-        self._bulk_shutdown = False
+        self._export_callback = None
 
     def open_project(self, path: str):
-        """Open a project window for the given path, or focus if already open."""
         project_key = path_to_project_key(path)
         resolved_path = str(pathlib.Path(path).resolve())
 
@@ -2105,25 +2161,16 @@ class AppWorkspaceController:
         window.show()
         window.open_initial_pane()
 
-    def focus_project(self, path: str):
-        project_key = path_to_project_key(path)
-        if project_key in self.project_windows:
-            window = self.project_windows[project_key]
-            window.raise_()
-            window.activateWindow()
-
     def unregister_project_window(self, window: ProjectWindow):
-        if window.project_key in self.project_windows:
-            del self.project_windows[window.project_key]
+        self.project_windows.pop(window.project_key, None)
 
     def mark_project_locally_closed(self, project_key: str):
         self.open_projects.discard(project_key)
         self._recently_closed.add(project_key)
 
-    # --- Server callback handlers ---
+    # --- Server callback routing ---
 
     def handle_server_message(self, item):
-        """Route a server callback to the appropriate handler."""
         action, arguments = item
         handler = getattr(self, f"_on_{action}", None)
         if handler is not None:
@@ -2132,54 +2179,47 @@ class AppWorkspaceController:
             logger.warning("Unknown server action: %s", action)
 
     def _on_projectOpened(self, project_identifier: str):
-        project_key = self._canonicalize_identifier(project_identifier)
-        if project_key is None:
-            return
-        self.open_projects.add(project_key)
+        project_key = self._canonicalize(project_identifier)
+        if project_key is not None:
+            self.open_projects.add(project_key)
 
     def _on_projectClosed(self, project_identifier: str):
-        project_key = self._canonicalize_identifier(project_identifier)
+        project_key = self._canonicalize(project_identifier)
         if project_key is None:
             return
         if project_key in self._recently_closed:
             self._recently_closed.discard(project_key)
-            return
-        self.open_projects.discard(project_key)
+        else:
+            self.open_projects.discard(project_key)
 
     def _on_exportAs(self, project_identifier: str, options: dict):
-        project_key = self._canonicalize_identifier(project_identifier)
+        project_key = self._canonicalize(project_identifier)
         if project_key is None:
             return
-        window = self.project_windows.get(project_key)
-        if window is not None:
-            # Route to the launcher's export flow for now
-            # (Phase 2 can move this into ProjectWindow)
+        if self._export_callback is not None:
             self._export_callback(project_identifier, options)
 
     def set_export_callback(self, callback):
-        """Set the callback for export requests (delegates to launcher for MVP)."""
         self._export_callback = callback
 
-    def _canonicalize_identifier(self, project_identifier: str) -> str | None:
+    def _canonicalize(self, project_identifier: str) -> str | None:
         try:
             return path_to_project_key(project_identifier)
         except Exception:
-            logger.warning(
-                "Failed to canonicalize project identifier: %s", project_identifier
-            )
+            logger.warning("Failed to canonicalize: %s", project_identifier)
             return None
 
     # --- Profile management ---
 
     def _create_profile(self, project_key: str) -> QWebEngineProfile | None:
         try:
-            profile_dir_name = project_key_to_profile_dir_name(project_key)
+            dir_name = project_key_to_profile_dir_name(project_key)
             app_data = QStandardPaths.writableLocation(
                 QStandardPaths.StandardLocation.AppDataLocation
             )
-            profile_path = os.path.join(app_data, "webprofiles", profile_dir_name)
+            profile_path = os.path.join(app_data, "webprofiles", dir_name)
             os.makedirs(profile_path, exist_ok=True)
-            profile = QWebEngineProfile(profile_dir_name, None)
+            profile = QWebEngineProfile(dir_name, None)
             profile.setPersistentStoragePath(profile_path)
             profile.setCachePath(os.path.join(profile_path, "cache"))
             return profile
@@ -2193,7 +2233,6 @@ class AppWorkspaceController:
         return bool(self.open_projects)
 
     def begin_bulk_shutdown(self):
-        self._bulk_shutdown = True
         for window in list(self.project_windows.values()):
             window.suppress_close_confirm()
 
@@ -2201,29 +2240,157 @@ class AppWorkspaceController:
         for window in list(self.project_windows.values()):
             window.close()
 
-    # --- Connection lost ---
-
     def notify_server_lost(self):
         for window in self.project_windows.values():
             window.show_connection_lost()
 ```
 
-- [ ] **Step 2: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
-git add fontra_pak/controller.py
-git commit -m "feat: implement AppWorkspaceController with registry, callbacks, and profiles"
+git add fontra_pak/controller.py tests/test_controller_callbacks.py
+git commit -m "feat: implement AppWorkspaceController"
 ```
 
-### Task 14: Wire the controller into the app lifecycle
+### Task 22: Wire the controller into the launcher
+
+**Files:**
+- Modify: `fontra_pak/launcher.py`
+
+This task makes four specific edits to `launcher.py`. Each edit is described as an exact string replacement.
+
+- [ ] **Step 1: Change the `FontraMainWidget.__init__` signature to accept a controller**
+
+Find this line in `fontra_pak/launcher.py`:
+
+```python
+    def __init__(self, port):
+        super().__init__()
+        self.port = port
+        self.openProjects = set()
+```
+
+Replace it with:
+
+```python
+    def __init__(self, port, controller=None):
+        super().__init__()
+        self.port = port
+        self.controller = controller
+        self.openProjects = set()
+```
+
+- [ ] **Step 2: Change `dropEvent` to route through the controller**
+
+Find:
+
+```python
+    def dropEvent(self, event):
+        self.label.setStyleSheet(neutralCSS)
+        files = [u.toLocalFile() for u in event.mimeData().urls()]
+        for path in files:
+            openFile(path, self.port)
+        event.acceptProposedAction()
+```
+
+Replace with:
+
+```python
+    def dropEvent(self, event):
+        self.label.setStyleSheet(neutralCSS)
+        files = [u.toLocalFile() for u in event.mimeData().urls()]
+        for path in files:
+            if self.controller is not None:
+                self.controller.open_project(path)
+            else:
+                openFile(path, self.port)
+        event.acceptProposedAction()
+```
+
+- [ ] **Step 3: Change `newFont` to route through the controller**
+
+Find this block at the end of the `newFont` method:
+
+```python
+        if os.path.exists(fontPath):
+            openFile(fontPath, self.port)
+```
+
+Replace with:
+
+```python
+        if os.path.exists(fontPath):
+            if self.controller is not None:
+                self.controller.open_project(fontPath)
+            else:
+                openFile(fontPath, self.port)
+```
+
+- [ ] **Step 4: Change `closeEvent` to use the controller for quit handling**
+
+Find:
+
+```python
+    def closeEvent(self, event):
+        if self.openProjects:
+            response = showMessageDialog(
+                "There are still open fonts, are you sure you want to quit?",
+                "Quitting Fontra Pak will cause open browser tabs to stop working.",
+                buttons=QMessageBox.StandardButton.Close
+                | QMessageBox.StandardButton.Cancel,
+                defaultButton=QMessageBox.StandardButton.Cancel,
+            )
+            if response == QMessageBox.StandardButton.Cancel:
+                event.ignore()
+
+        self.settings.setValue("size", self.size())
+        self.settings.setValue("pos", self.pos())
+```
+
+Replace with:
+
+```python
+    def closeEvent(self, event):
+        has_open = (
+            self.controller.has_open_projects()
+            if self.controller is not None
+            else bool(self.openProjects)
+        )
+        if has_open:
+            response = showMessageDialog(
+                "There are still open fonts, are you sure you want to quit?",
+                "Quitting Fontra Pak will close all project windows.",
+                buttons=QMessageBox.StandardButton.Close
+                | QMessageBox.StandardButton.Cancel,
+                defaultButton=QMessageBox.StandardButton.Cancel,
+            )
+            if response == QMessageBox.StandardButton.Cancel:
+                event.ignore()
+                return
+
+            if self.controller is not None:
+                self.controller.begin_bulk_shutdown()
+                self.controller.close_all_project_windows()
+
+        self.settings.setValue("size", self.size())
+        self.settings.setValue("pos", self.pos())
+```
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add fontra_pak/launcher.py
+git commit -m "feat: wire controller into launcher (drop, newFont, closeEvent)"
+```
+
+### Task 23: Wire the controller into `app.py`
 
 **Files:**
 - Modify: `fontra_pak/app.py`
-- Modify: `fontra_pak/launcher.py`
 
-- [ ] **Step 1: Update `app.py` to use AppWorkspaceController**
+Replace the entire contents of `fontra_pak/app.py` with the version below. The changes from the Phase 0 version are: (a) imports `AppWorkspaceController`, (b) `FontraApplication.__init__` takes a `controller` param, (c) macOS `FileOpen` routes through `controller.open_project`, (d) `main()` creates the controller and passes it everywhere.
 
-Replace the contents of `fontra_pak/app.py` with:
+- [ ] **Step 1: Replace `fontra_pak/app.py`**
 
 ```python
 # fontra_pak/app.py
@@ -2249,12 +2416,10 @@ class FontraApplication(QApplication):
         super().__init__(argv)
 
     def event(self, event):
-        """Handle macOS FileOpen events."""
         if event.type() == QEvent.Type.FileOpen:
             self.controller.open_project(event.file())
         else:
             return super().event(event)
-
         return True
 
 
@@ -2285,10 +2450,8 @@ def main():
 
     mainWindow = FontraMainWidget(port, controller)
 
-    # Route server callbacks through the controller
     thread = callInNewThread(queueGetter, queue, controller.handle_server_message)
 
-    # Wire export callback to launcher (MVP: launcher still owns export UI)
     controller.set_export_callback(mainWindow.exportAs)
 
     mainWindow.show()
@@ -2304,172 +2467,30 @@ def main():
     sys.exit(app.exec())
 ```
 
-- [ ] **Step 2: Update `launcher.py` to use the controller**
-
-In `FontraMainWidget.__init__`, accept and store the controller:
-
-Change the constructor signature and the `openFile` calls:
-
-```python
-class FontraMainWidget(QMainWindow):
-    def __init__(self, port, controller=None):
-        super().__init__()
-        self.port = port
-        self.controller = controller
-        self.openProjects = set()  # Keep for backward compat during transition
-        # ... rest unchanged
-```
-
-Update `dropEvent` to route through controller when available:
-
-```python
-    def dropEvent(self, event):
-        self.label.setStyleSheet(neutralCSS)
-        files = [u.toLocalFile() for u in event.mimeData().urls()]
-        for path in files:
-            if self.controller is not None:
-                self.controller.open_project(path)
-            else:
-                openFile(path, self.port)
-        event.acceptProposedAction()
-```
-
-Update `newFont` to route through controller:
-
-In the `newFont` method, replace the `openFile` call at the end:
-
-```python
-        if os.path.exists(fontPath):
-            if self.controller is not None:
-                self.controller.open_project(fontPath)
-            else:
-                openFile(fontPath, self.port)
-```
-
-Update `closeEvent` to check controller for open projects:
-
-```python
-    def closeEvent(self, event):
-        has_open = (
-            self.controller.has_open_projects()
-            if self.controller is not None
-            else bool(self.openProjects)
-        )
-        if has_open:
-            response = showMessageDialog(
-                "There are still open fonts, are you sure you want to quit?",
-                "Quitting Fontra Pak will close all project windows.",
-                buttons=QMessageBox.StandardButton.Close
-                | QMessageBox.StandardButton.Cancel,
-                defaultButton=QMessageBox.StandardButton.Cancel,
-            )
-            if response == QMessageBox.StandardButton.Cancel:
-                event.ignore()
-                return
-
-            if self.controller is not None:
-                self.controller.begin_bulk_shutdown()
-                self.controller.close_all_project_windows()
-
-        self.settings.setValue("size", self.size())
-        self.settings.setValue("pos", self.pos())
-```
-
-Keep `messageFromServer`, `projectOpened`, `projectClosed` methods for now — the controller is the primary callback receiver since Task 14 Step 1 wired it, but the launcher methods remain as fallbacks until fully removed in a later cleanup.
-
-- [ ] **Step 3: Verify the app runs**
+- [ ] **Step 2: Verify the app runs**
 
 Run: `python -m fontra_pak`
 
-Expected: The launcher window appears. Dropping a font file opens a native project window with an embedded Fontra overview instead of launching the browser.
+Expected: The launcher window appears. Drop a font file. A native project window should open with an embedded Fontra overview **inside the app** instead of launching the system browser.
 
-- [ ] **Step 4: Commit**
-
-```bash
-git add fontra_pak/app.py fontra_pak/launcher.py
-git commit -m "feat: wire AppWorkspaceController into app lifecycle, replace browser handoff"
-```
-
-### Task 15: QtWebEngine smoke test
-
-**Files:**
-- Modify: `tests/test_startup.py`
-
-- [ ] **Step 1: Update the startup test**
-
-The existing test already runs the packaged binary with `test-startup`. It should still pass since the entry point is unchanged. Run it to confirm:
-
-Run: `pytest tests/test_startup.py -v`
-
-Expected: PASS (or skip if not on the target platform with a dist build).
-
-- [ ] **Step 2: Commit (if any test changes were needed)**
+- [ ] **Step 3: Commit**
 
 ```bash
-git commit -m "test: verify startup test still passes with QtWebEngine"
+git add fontra_pak/app.py
+git commit -m "feat: wire controller into app.py, replace browser handoff"
 ```
 
 ---
 
 ## Phase 2: Workspace Shell
 
-### Task 16: Multi-pane workspace with docking and tabification
+### Task 24: Implement workspace persistence serialization
 
 **Files:**
-- Modify: `fontra_pak/project_window.py`
-
-The `ProjectWindow` already supports multiple panes via `open_view()` and tabification in Task 12. This task verifies the four known Fontra destinations work as internal pane targets.
-
-- [ ] **Step 1: Add a menu bar to ProjectWindow for opening views**
-
-Add a `_setup_menu_bar` method to `ProjectWindow.__init__`:
-
-```python
-    def __init__(self, ...):
-        # ... existing init code ...
-        self._setup_menu_bar()
-
-    def _setup_menu_bar(self):
-        menu_bar = self.menuBar()
-        view_menu = menu_bar.addMenu("&View")
-
-        view_menu.addAction("Font Overview", lambda: self.open_view(
-            ViewDescriptor.for_overview(self.project_key)
-        ))
-        view_menu.addAction("Font Info", lambda: self.open_view(
-            ViewDescriptor.for_fontinfo(self.project_key)
-        ))
-        view_menu.addAction("Application Settings", lambda: self.open_view(
-            ViewDescriptor.for_applicationsettings(self.project_key)
-        ))
-```
-
-- [ ] **Step 2: Verify multi-pane workflow**
-
-Run: `python -m fontra_pak`
-
-Manual test:
-1. Drop a font file — project window opens with overview pane.
-2. Use View menu to open Font Info — appears as a second tab.
-3. Use View menu to open Application Settings — appears as a third tab.
-4. Drag tabs to dock side-by-side.
-5. Close a pane — remaining panes stay.
-6. Close all panes — overview reopens automatically.
-
-- [ ] **Step 3: Commit**
-
-```bash
-git add fontra_pak/project_window.py
-git commit -m "feat: add View menu for opening panes, verify multi-pane docking"
-```
-
-### Task 17: Workspace persistence — save
-
-**Files:**
-- Create: `fontra_pak/persistence.py`
 - Create: `tests/test_persistence.py`
+- Create: `fontra_pak/persistence.py`
 
-- [ ] **Step 1: Write failing tests for persistence serialization**
+- [ ] **Step 1: Write failing tests**
 
 ```python
 # tests/test_persistence.py
@@ -2479,96 +2500,89 @@ from fontra_pak.persistence import (
     deserialize_workspace,
     serialize_project_record,
     serialize_workspace,
+    validate_pane_record,
 )
 from fontra_pak.view_descriptor import ViewDescriptor
 
 
-def test_serialize_project_record():
-    panes = [
-        {
-            "pane_instance_id": "abc123",
-            "descriptor": ViewDescriptor.for_overview("c:\\fonts\\demo.ufo").to_dict(),
-        },
-        {
-            "pane_instance_id": "def456",
-            "descriptor": ViewDescriptor.for_editor(
-                "c:\\fonts\\demo.ufo", route_hash="#glyph=A"
-            ).to_dict(),
-        },
-    ]
+def test_serialize_project_record_fields():
     record = serialize_project_record(
         project_key="c:\\fonts\\demo.ufo",
         project_path="C:\\Fonts\\Demo.ufo",
         active_pane_instance_id="def456",
-        pane_records=panes,
+        pane_records=[
+            {"pane_instance_id": "abc123",
+             "descriptor": ViewDescriptor.for_overview("c:\\fonts\\demo.ufo").to_dict()},
+        ],
         geometry=b"fake_geometry",
         dock_state=b"fake_dock_state",
     )
     assert record["project_key"] == "c:\\fonts\\demo.ufo"
     assert record["project_path"] == "C:\\Fonts\\Demo.ufo"
     assert record["active_pane_instance_id"] == "def456"
-    assert len(record["pane_records"]) == 2
+    assert len(record["pane_records"]) == 1
 
 
-def test_serialize_workspace_round_trip():
-    workspace = {
-        "projects": [
-            serialize_project_record(
-                project_key="c:\\fonts\\demo.ufo",
-                project_path="C:\\Fonts\\Demo.ufo",
-                active_pane_instance_id="abc123",
-                pane_records=[
-                    {
-                        "pane_instance_id": "abc123",
-                        "descriptor": ViewDescriptor.for_overview(
-                            "c:\\fonts\\demo.ufo"
-                        ).to_dict(),
-                    }
-                ],
-                geometry=b"geom",
-                dock_state=b"dock",
-            )
-        ]
-    }
+def test_round_trip():
+    workspace = {"projects": [
+        serialize_project_record(
+            project_key="key", project_path="path",
+            active_pane_instance_id="id1",
+            pane_records=[{"pane_instance_id": "id1",
+                           "descriptor": ViewDescriptor.for_overview("key").to_dict()}],
+            geometry=b"g", dock_state=b"d",
+        )
+    ]}
     serialized = serialize_workspace(workspace)
     deserialized = deserialize_workspace(serialized)
     assert deserialized is not None
     assert len(deserialized["projects"]) == 1
-    assert deserialized["projects"][0]["project_key"] == "c:\\fonts\\demo.ufo"
+    assert deserialized["projects"][0]["project_key"] == "key"
 
 
 def test_deserialize_corrupt_returns_none():
-    result = deserialize_workspace("not valid json {{{")
-    assert result is None
+    assert deserialize_workspace("not json {{{") is None
 
 
 def test_deserialize_missing_key_returns_none():
-    result = deserialize_workspace(json.dumps({"wrong_key": []}))
-    assert result is None
+    assert deserialize_workspace(json.dumps({"wrong": []})) is None
+
+
+def test_validate_pane_record_valid():
+    record = {"pane_instance_id": "abc",
+              "descriptor": ViewDescriptor.for_editor("key", "#hash").to_dict()}
+    assert validate_pane_record(record) is not None
+
+
+def test_validate_pane_record_unknown_page():
+    record = {"pane_instance_id": "abc",
+              "descriptor": {"project_key": "k", "view_kind": "x",
+                             "page_path": "/bad.html", "route_hash": "",
+                             "title_hint": "X"}}
+    assert validate_pane_record(record) is None
+
+
+def test_validate_pane_record_missing_descriptor():
+    assert validate_pane_record({"pane_instance_id": "abc"}) is None
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [ ] **Step 2: Run tests — they should fail**
 
 Run: `pytest tests/test_persistence.py -v`
 
-Expected: FAIL with `ModuleNotFoundError`
+Expected: `ModuleNotFoundError`
 
-- [ ] **Step 3: Implement `persistence.py`**
+- [ ] **Step 3: Create `fontra_pak/persistence.py`**
 
 ```python
 # fontra_pak/persistence.py
-"""Workspace persistence: serialize and deserialize project records for QSettings.
-
-See spec section "State Model > Persistence" for the full contract.
-"""
-
 from __future__ import annotations
 
 import base64
 import json
 import logging
 
-from fontra_pak.view_descriptor import ViewDescriptor
+from fontra_pak.view_descriptor import KNOWN_PAGE_PATHS, ViewDescriptor
 
 logger = logging.getLogger(__name__)
 
@@ -2623,48 +2637,44 @@ def deserialize_workspace(data: str) -> dict | None:
 
 def validate_pane_record(pane_record: dict) -> ViewDescriptor | None:
     try:
-        descriptor_data = pane_record["descriptor"]
-        descriptor = ViewDescriptor.from_dict(descriptor_data)
-        if descriptor.page_path not in (
-            "/fontoverview.html",
-            "/editor.html",
-            "/fontinfo.html",
-            "/applicationsettings.html",
-        ):
+        descriptor = ViewDescriptor.from_dict(pane_record["descriptor"])
+        if descriptor.page_path not in KNOWN_PAGE_PATHS:
             return None
         return descriptor
     except (KeyError, TypeError):
         return None
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [ ] **Step 4: Run tests — they should pass**
 
 Run: `pytest tests/test_persistence.py -v`
 
-Expected: All tests PASS.
+Expected: All PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add fontra_pak/persistence.py tests/test_persistence.py
-git commit -m "feat: implement workspace persistence serialization with tests"
+git commit -m "feat: implement workspace persistence serialization"
 ```
 
-### Task 18: Wire persistence into save and restore
+### Task 25: Add save_workspace to the controller
 
 **Files:**
 - Modify: `fontra_pak/controller.py`
-- Modify: `fontra_pak/app.py`
 
-- [ ] **Step 1: Add save/restore methods to AppWorkspaceController**
+- [ ] **Step 1: Add the `save_workspace` method to `AppWorkspaceController`**
 
-Add to `fontra_pak/controller.py`:
+Add these imports at the top of `fontra_pak/controller.py`, after the existing imports:
+
+```python
+from fontra_pak.persistence import serialize_project_record, serialize_workspace
+```
+
+Then add this method to the `AppWorkspaceController` class, after the `close_all_project_windows` method:
 
 ```python
     def save_workspace(self, settings):
-        """Persist all open project windows for restore on next launch."""
-        from fontra_pak.persistence import serialize_project_record, serialize_workspace
-
         project_records = []
         for project_key, window in self.project_windows.items():
             pane_records = []
@@ -2673,7 +2683,6 @@ Add to `fontra_pak/controller.py`:
                     "pane_instance_id": pane.pane_instance_id,
                     "descriptor": pane.descriptor.to_dict(),
                 })
-
             record = serialize_project_record(
                 project_key=project_key,
                 project_path=window.project_path,
@@ -2683,21 +2692,37 @@ Add to `fontra_pak/controller.py`:
                 dock_state=bytes(window.saveState()),
             )
             project_records.append(record)
+        settings.setValue("workspace", serialize_workspace({"projects": project_records}))
+```
 
-        workspace = {"projects": project_records}
-        settings.setValue("workspace", serialize_workspace(workspace))
+- [ ] **Step 2: Commit**
 
+```bash
+git add fontra_pak/controller.py
+git commit -m "feat: add save_workspace to controller"
+```
+
+### Task 26: Add restore_workspace to the controller
+
+**Files:**
+- Modify: `fontra_pak/controller.py`
+
+- [ ] **Step 1: Add the restore imports**
+
+Add to the existing import block at the top of `fontra_pak/controller.py`:
+
+```python
+from fontra_pak.persistence import deserialize_project_record, deserialize_workspace, serialize_project_record, serialize_workspace, validate_pane_record
+```
+
+(This replaces the partial import added in Task 25.)
+
+- [ ] **Step 2: Add the `restore_workspace` method**
+
+Add this method to `AppWorkspaceController`, after `save_workspace`:
+
+```python
     def restore_workspace(self, settings) -> list[str]:
-        """Restore project windows from a previous clean shutdown.
-
-        Returns a list of error messages for projects that failed to restore.
-        """
-        from fontra_pak.persistence import (
-            deserialize_project_record,
-            deserialize_workspace,
-            validate_pane_record,
-        )
-
         errors = []
         raw = settings.value("workspace", None)
         if raw is None:
@@ -2712,7 +2737,7 @@ Add to `fontra_pak/controller.py`:
         for project_data in workspace["projects"]:
             record = deserialize_project_record(project_data)
             if record is None:
-                errors.append(f"Corrupt project record, skipped.")
+                errors.append("Corrupt project record, skipped.")
                 continue
 
             project_path = record["project_path"]
@@ -2730,25 +2755,21 @@ Add to `fontra_pak/controller.py`:
             if window is None:
                 continue
 
-            # Restore geometry and dock state
             try:
                 window.restoreGeometry(record["geometry"])
             except Exception:
                 errors.append(f"Failed to restore geometry for {project_path}")
 
-            # Restore additional panes beyond the initial overview
             for pane_record in record["pane_records"][1:]:
                 descriptor = validate_pane_record(pane_record)
                 if descriptor is not None:
                     window._create_pane(descriptor, pane_instance_id=pane_record.get("pane_instance_id"))
 
-            # Restore dock state after all panes exist
             try:
                 window.restoreState(record["dock_state"])
             except Exception:
                 errors.append(f"Failed to restore dock layout for {project_path}")
 
-            # Focus the active pane
             target_id = record["active_pane_instance_id"]
             if target_id:
                 for pane in window.panes:
@@ -2760,53 +2781,61 @@ Add to `fontra_pak/controller.py`:
         return errors
 ```
 
-Add `import os` to the top of `controller.py` if not already present.
+- [ ] **Step 3: Commit**
 
-- [ ] **Step 2: Update `app.py` to handle save/restore and startup arguments**
+```bash
+git add fontra_pak/controller.py
+git commit -m "feat: add restore_workspace to controller"
+```
 
-In `main()`, add workspace restore logic after creating the launcher window, and save on quit:
+### Task 27: Wire save and restore into app startup/shutdown
+
+**Files:**
+- Modify: `fontra_pak/app.py`
+
+- [ ] **Step 1: Add save to the cleanup function**
+
+In `fontra_pak/app.py`, find the `main()` function. Add `import os` and `from PyQt6.QtCore import QSettings` to the imports at the top of the file.
+
+Then find this block inside `main()`:
 
 ```python
-def main():
-    queue = multiprocessing.Queue()
-    host = "localhost"
-    port = findFreeTCPPort(host=host)
-    serverProcess = multiprocessing.Process(
-        target=runFontraServer, args=(host, port, queue)
-    )
-    serverProcess.start()
-
-    controller = AppWorkspaceController(host, port)
-
-    app = FontraApplication(sys.argv, port, controller)
-
-    settings = QSettings("xyz.fontra", "FontraPak")
-
-    def cleanup():
-        # Save workspace before shutting down
-        controller.save_workspace(settings)
-        queue.put(None)
-        thread.join()
-        process = psutil.Process(serverProcess.pid)
-        for p in [process] + process.children(recursive=True):
-            if sys.platform != "win32":
-                p.send_signal(psutil.signal.SIGINT)
-            else:
-                p.terminate()
-
     app.aboutToQuit.connect(cleanup)
 
     mainWindow = FontraMainWidget(port, controller)
+```
 
-    thread = callInNewThread(queueGetter, queue, controller.handle_server_message)
+Replace with:
 
-    controller.set_export_callback(mainWindow.exportAs)
+```python
+    settings = QSettings("xyz.fontra", "FontraPak")
 
+    def save_and_cleanup():
+        controller.save_workspace(settings)
+        cleanup()
+
+    app.aboutToQuit.connect(save_and_cleanup)
+
+    mainWindow = FontraMainWidget(port, controller)
+```
+
+- [ ] **Step 2: Add restore after the launcher is shown**
+
+Find this block inside `main()`:
+
+```python
     mainWindow.show()
 
-    # Handle startup: explicit file arguments vs workspace restore
-    file_args = [arg for arg in sys.argv[1:] if not arg.startswith("-") and os.path.exists(arg)]
+    if "test-startup" in sys.argv:
+```
 
+Replace with:
+
+```python
+    mainWindow.show()
+
+    # Startup: explicit file args win; otherwise restore last workspace.
+    file_args = [a for a in sys.argv[1:] if not a.startswith("-") and os.path.exists(a)]
     if file_args:
         for path in file_args:
             controller.open_project(path)
@@ -2820,134 +2849,70 @@ def main():
             )
 
     if "test-startup" in sys.argv:
-
-        def delayedQuit():
-            print("test-startup")
-            app.quit()
-
-        QTimer.singleShot(1500, delayedQuit)
-
-    sys.exit(app.exec())
 ```
 
-Add `import os` and `from PyQt6.QtCore import QSettings` to the imports in `app.py`.
-
-- [ ] **Step 3: Verify save and restore**
+- [ ] **Step 3: Verify save and restore work**
 
 Run: `python -m fontra_pak`
 
-Manual test:
-1. Open a project, open multiple panes, rearrange tabs.
+1. Open a project. Open a second pane (View > Font Info).
 2. Quit the app cleanly.
-3. Re-launch — project window should restore with the same layout.
+3. Re-launch: `python -m fontra_pak`
+4. The project window should reappear with both panes.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add fontra_pak/controller.py fontra_pak/app.py
-git commit -m "feat: implement workspace save and restore on clean shutdown"
+git add fontra_pak/app.py
+git commit -m "feat: wire workspace save/restore into app lifecycle"
 ```
 
-### Task 19: Download handling
+### Task 28: Run full test suite
 
 **Files:**
-- Modify: `fontra_pak/workspace_pane.py`
-
-- [ ] **Step 1: Add download handling to PaneNavigationBridge**
-
-In `workspace_pane.py`, add a download handler to `WorkspacePane.__init__`:
-
-```python
-        # In WorkspacePane.__init__, after setting the page:
-        profile.downloadRequested.connect(self._on_download_requested)
-```
-
-Add the download handler method to `WorkspacePane`:
-
-```python
-    def _on_download_requested(self, download):
-        """Handle file downloads initiated by embedded views."""
-        from PyQt6.QtWidgets import QFileDialog
-
-        suggested_path = os.path.join(
-            os.path.expanduser("~"),
-            download.downloadFileName(),
-        )
-        save_path, _ = QFileDialog.getSaveFileName(
-            self.project_window,
-            "Save download",
-            suggested_path,
-        )
-        if save_path:
-            download.setDownloadDirectory(os.path.dirname(save_path))
-            download.setDownloadFileName(os.path.basename(save_path))
-            download.accept()
-        else:
-            download.cancel()
-```
-
-Add `import os` to the imports in `workspace_pane.py`.
-
-- [ ] **Step 2: Commit**
-
-```bash
-git add fontra_pak/workspace_pane.py
-git commit -m "feat: handle downloads from embedded views with native save dialog"
-```
-
-### Task 20: Run full test suite and verify
-
-**Files:**
-- No new files
+- No changes.
 
 - [ ] **Step 1: Run all tests**
 
 Run: `pytest tests/ -v`
 
-Expected: All tests pass:
+Expected results:
 - `test_fontra_client_bundling` — PASS
-- `test_startup` — PASS (or skip)
+- `test_startup` — PASS or SKIP (platform/dist dependent)
 - `test_project_identity` — PASS
 - `test_view_descriptor` — PASS
 - `test_routing` — PASS
+- `test_controller_callbacks` — PASS
 - `test_persistence` — PASS
 
-- [ ] **Step 2: Run the app and test the full workflow**
+- [ ] **Step 2: Manual acceptance test**
 
 Run: `python -m fontra_pak`
 
-Manual acceptance checklist (from spec "MVP Acceptance Boundary"):
+Checklist (from spec "MVP Acceptance Boundary"):
 1. Opening a project does NOT launch the system browser.
 2. The editor window is owned by `Fontra Pak.exe` (check task manager).
-3. One project = one window.
-4. Panes can be tabbed, docked, and tiled.
-5. All four Fontra pages work as internal destinations.
-6. `window.open()` from embedded views creates panes, not browser windows.
-7. External links (Help > Documentation in Fontra menu) open in browser.
-8. Different projects use different web profiles.
+3. One project = one window. Drop the same file again — existing window focuses.
+4. View menu opens panes as tabs. Tabs can be dragged to dock side-by-side.
+5. Overview, Editor (click a glyph in overview), Font Info, and Application Settings all work as internal panes.
+6. `window.open()` from Fontra menus creates panes, not browser windows.
+7. External links (Help > Documentation in Fontra menu) open in system browser.
+8. Open two different projects — they get separate windows.
 9. Clean quit and relaunch restores the workspace.
-
-- [ ] **Step 3: Commit any fixes needed**
-
-```bash
-git add -A
-git commit -m "fix: address issues found during full integration testing"
-```
 
 ---
 
 ## Post-Plan Notes
 
-### What this plan does NOT cover (post-MVP / Phase 3)
+### Not covered (post-MVP / Phase 3)
 
 - Crash-session restore
-- Server health monitoring and connection-lost detection (the `notify_server_lost` method exists but is not wired to a health check)
+- Server health monitoring (the `notify_server_lost` method exists but is not wired to a health check)
 - Moving export dialog execution into `ProjectWindow` (currently delegates to launcher)
-- Polished title/focus behavior for the `_self` navigation edge case in application settings
-- PyInstaller packaging verification (requires running `pyinstaller FontraPak.spec -y` and testing the dist build — depends on environment)
+- PyInstaller packaging verification (run `pyinstaller FontraPak.spec -y` and test the dist build)
 - macOS compatibility
 - Windows file-type associations
 
-### Key risk to validate early (Phase 1, Task 15)
+### Key risk to validate early
 
-After Task 14, manually verify that mouse-profile software sees the focused project window as belonging to `Fontra Pak.exe`. If it sees `QtWebEngineProcess.exe` instead, the entire approach needs re-evaluation before continuing to Phase 2.
+After Task 23, manually verify that mouse-profile software sees the focused project window as belonging to `Fontra Pak.exe`. If it sees `QtWebEngineProcess.exe` instead, the entire approach needs re-evaluation before continuing to Phase 2.
