@@ -115,6 +115,7 @@ This is the minimal change set that should make the focused editor window belong
 - Fontra Pak starts a local `FontraServer` on `localhost`.
 - The launcher window remains a native PyQt window.
 - Existing native dialogs, file export, settings, and process cleanup logic stay in the wrapper.
+- The server creates a `versionToken` at startup. The wrapper must capture this token and include it when constructing pane URLs so embedded views pass server-side token validation.
 
 ### New architecture
 
@@ -133,6 +134,8 @@ Responsibilities:
 - Keep the current drop target and "new font" flow.
 - Convert user actions into `openProject(projectPath)` or `createProject(...)` requests.
 - Never own the project-window registry or open-project tracking.
+- Route macOS `FileOpen` events (currently handled by `FontraApplication.event()`) through `App Workspace Controller` instead of calling `openFile()` directly.
+- Keep the existing update-checker and download button. These are launcher-scoped and do not interact with project windows.
 
 #### App Workspace Controller
 
@@ -241,6 +244,12 @@ The shell should use Qt's native docking model for MVP:
 - `tabifyDockWidget(...)` for tab groups.
 - Built-in dock movement and split docking for drag-based rearrangement and tiling.
 
+Known `QDockWidget` limitations to expect:
+
+- Tab ordering within tab groups is not fully controllable via the public API.
+- Dock state serialization (`saveState()`/`restoreState()`) is versioned internally by Qt and can silently fail across Qt minor version upgrades. Treat restore failure as non-fatal per the restore error handling rules.
+- Drag-based rearrangement visual feedback is basic compared to dedicated dock frameworks. This is acceptable for MVP.
+
 This matches the requested "one project/font = one window" requirement while still allowing many internal views.
 
 ## View Descriptor
@@ -309,6 +318,7 @@ Title derivation rules:
 URL mapping:
 
 - All pane URLs are built from `http://localhost:<port>` plus `pagePath`, query `?project=<projectQueryValue>`, and `routeHash`.
+- The server's `versionToken` must be available to the wrapper so pane URLs pass server-side validation. The token is generated at server startup; the wrapper should capture it from the server process (via the existing queue or a startup handshake) rather than constructing URLs without it.
 - Wrapper-created panes may target only the four known top-level Fontra pages.
 
 ## Routing Model
@@ -398,7 +408,7 @@ Session isolation:
 
 - All panes in one project window must share one `QWebEngineProfile`.
 - Different project windows must use different web profiles.
-- The persistent storage path for a profile should be derived from the canonical project path so local storage, cookies, cache, and related browser state stay isolated per project.
+- The persistent storage path for a profile should be derived from a hash of `projectKey`, not from the raw canonical path, to avoid Windows MAX_PATH issues and special-character problems in directory names. The hash-to-path mapping should be stored under a known app data location.
 - Pane-level web profiles are out of scope because they would break the desired within-project workspace behavior.
 
 ## Lifecycle
@@ -484,12 +494,20 @@ Failure behavior should be explicit:
 
 The existing environment already uses PyQt, but it does not currently include QtWebEngine. MVP therefore requires:
 
-- Add the QtWebEngine dependency.
-- Update PyInstaller bundling to include QtWebEngine resources, helper executables, and the data files required for packaged page load.
+- Add `PyQt6-WebEngine` to `requirements.txt`.
+- Update the PyInstaller spec (`FontraPak.spec`) to collect QtWebEngine resources. This includes Chromium data files, ICU data, `QtWebEngineProcess.exe` (the renderer helper), and locale resources. PyInstaller provides a hook (`hook-PyQt6.QtWebEngineWidgets.py`), but packaged QtWebEngine builds are a known source of missing-file and wrong-path issues. Budget time for iterative packaging fixes.
 - Verify the packaged Windows app still launches and that project windows can load local Fontra pages.
 - Add a packaged smoke test that exercises first-page load in a project window, not just process startup.
 
-Bundle size will increase. That is acceptable because solving focused-window ownership and internal workspace control is the primary requirement.
+Bundle size will increase significantly (expect ~200-300 MB from Chromium resources alone). That is acceptable because solving focused-window ownership and internal workspace control is the primary requirement.
+
+### Renderer process identity
+
+QtWebEngine spawns `QtWebEngineProcess.exe` as a child process for rendering. The top-level `QMainWindow` still belongs to the `Fontra Pak.exe` process, so window-level ownership is correct. However, mouse-profile or macro software that inspects the process tree rather than the focused window handle may see the renderer child process. This should be tested early in Phase 1 as a go/no-go gate for the primary product use case.
+
+### Windows file associations
+
+The current PyInstaller spec registers macOS file-type associations via `CFBundleDocumentTypes` but does not register Windows file-type associations. Windows file-type registration is typically handled by an installer (NSIS, Inno Setup, MSIX) or manual registry entries, not by PyInstaller. This is not required for MVP but should be tracked for post-MVP distribution.
 
 ## MVP Acceptance Boundary
 
@@ -519,16 +537,32 @@ At minimum, MVP planning and implementation should cover:
 - Lifecycle race test: first-load `projectOpened`, late `projectClosed`, and restore-time profile or initial-pane failures behave according to the lifecycle contract.
 - Failure test: broken pane load shows a recoverable in-app error path.
 
+- Navigation interception test: Fontra's frontend uses browser-native navigation (`window.open`, `location.href` assignment) to move between views. Verify that `QWebEnginePage.createWindow()` and `acceptNavigationRequest()` correctly intercept all four page transitions (overview to editor, editor to overview, any page to font info, any page to application settings) inside the embedded runtime.
+- Window ownership test: verify with the target mouse-profile software that the focused project window is attributed to `Fontra Pak.exe`, not to `QtWebEngineProcess.exe`.
+
 Manual verification on Windows is mandatory because the mouse-profile use case is the primary product reason for the change.
 
 ## Suggested Implementation Order
 
-Phases 1 and 2 together define MVP. Phase 3 is post-MVP hardening.
+Phases 0 through 2 together define MVP. Phase 3 is post-MVP hardening.
+
+### Phase 0: Codebase restructuring (prerequisite)
+
+The current implementation is a single monolithic file (`FontraPakMain.py`, ~668 lines). The MVP introduces at least six new architectural units. These should not be added to a single file.
+
+- Extract the existing code into a `fontra_pak/` package with a `__main__.py` entry point.
+- Split existing concerns (launcher window, server lifecycle, IPC, export, utilities) into separate modules.
+- Update `FontraPak.spec` to point at the new entry point.
+- Verify the packaged build still works after restructuring.
+
+This is a pure refactor with no behavior change. It should be completed and verified before Phase 1 begins.
 
 ### Phase 1: Embedded single project window
 
-- Add the embedded web runtime.
+- Add `PyQt6-WebEngine` and verify QtWebEngine packaging with a smoke test before writing application code. Resolve any missing-file or helper-process issues first.
+- Validate window-ownership behavior with the target mouse-profile software early. If `QtWebEngineProcess.exe` child processes break the use case, escalate before investing in workspace features.
 - Replace `webbrowser.open(...)` for project launch with a native project window.
+- Route macOS `FileOpen` events and launcher actions through `App Workspace Controller`.
 - Introduce `App Workspace Controller`, exact routing rules, and per-project web profiles.
 
 ### Phase 2: Workspace shell
