@@ -16,8 +16,7 @@ def buildWindowsVersionResource():
         VarStruct,
     )
 
-    y, m, patch, *extra = fontraVersion.split(".", maxsplit=3)
-    y, m, patch = [int(v) for v in (y, m, patch)]
+    y, m, patch = 1, 0, 0
 
     return VSVersionInfo(
         ffi=FixedFileInfo(
@@ -38,14 +37,14 @@ def buildWindowsVersionResource():
                         [
                             StringStruct("CompanyName", "Fontra.xyz"),
                             StringStruct("FileDescription", "Fontra Pak"),
-                            StringStruct("FileVersion", fontraVersion),
+                            StringStruct("FileVersion", "1.0.0"),  # Your hardcoded version
                             StringStruct("InternalName", "Fontra Pak"),
                             StringStruct(
                                 "LegalCopyright", "© Google LLC, Just van Rossum"
                             ),
                             StringStruct("OriginalFilename", "Fontra Pak.exe"),
                             StringStruct("ProductName", "Fontra Pak"),
-                            StringStruct("ProductVersion", fontraVersion),
+                            StringStruct("ProductVersion", "1.0.0"),  # Your hardcoded version
                         ],
                     )
                 ]
