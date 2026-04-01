@@ -3,6 +3,14 @@
 Date: 2026-04-01
 Status: Approved design
 
+## Introduction
+
+Fontra Pak already acts as a native wrapper around Fontra, but today it stops short of owning the real editing experience. The wrapper launches a small native window for opening or dropping projects, then hands the actual editor off to the user's default browser. That breaks the core desktop-app expectations this project cares about: the focused editor window is no longer owned by `Fontra Pak.exe`, mouse-profile software sees the browser instead of the app, and window management is split between the wrapper and external browser windows or tabs.
+
+This project is intended to close that gap without replatforming Fontra Pak or rewriting Fontra itself for MVP. The design keeps the current Python, PyQt, local-server, and packaging model, but turns Fontra Pak into the real desktop shell for editing: one native project window per font, internal panes and tabs for Fontra views, wrapper-owned routing and workspace behavior, and a Windows-first MVP that proves the process/window ownership problem is actually solved.
+
+This introduction is descriptive only. It recaps the problem and intent but does not expand the MVP scope beyond the formal goals, non-goals, and acceptance boundary defined below.
+
 ## Summary
 
 Fontra Pak should stop handing editing off to the system browser and instead own both the launcher window and each project editor window as native desktop windows provided by `Fontra Pak.exe`.
@@ -213,6 +221,10 @@ MVP should treat the existing wrapper queue messages as the authoritative callba
 
 If canonicalization fails or no registered project window matches the canonicalized `projectKey`, MVP should log the mismatch and ignore the event rather than guessing a target.
 
+Exception:
+
+- If `projectClosed` arrives for a `projectKey` that was recently closed by the shell, treat it as expected late cleanup and ignore it without warning.
+
 ## Workspace Behavior
 
 Each open project gets one top-level native window. Within that window:
@@ -409,7 +421,7 @@ Precedence:
 
 - The launcher asks `App Workspace Controller` to open a canonical project path.
 - If a `ProjectWindow` for that path already exists, the controller focuses it.
-- Otherwise the controller creates a new `ProjectWindow`, initializes its per-project web profile, opens the initial pane, and registers the window.
+- Otherwise the controller creates a new `ProjectWindow`, initializes its per-project web profile, registers the window immediately, and then opens the initial pane.
 - If the first pane fails to load after the window exists, the project window stays open and shows an in-window error pane with reload and close actions.
 
 ### Close pane
@@ -433,6 +445,7 @@ Precedence:
 - If none are open, quit proceeds without prompt.
 - If one or more are open, quit shows one confirmation prompt and, on confirmation, snapshots the currently open project windows for restore, then closes all project windows.
 - During confirmed app quit, `App Workspace Controller` sets a bulk-shutdown flag so per-window close confirmation prompts are suppressed.
+- Clean-shutdown workspace persistence happens on every clean app quit, not only on the code path that shows a confirmation prompt.
 
 ### Restore
 
@@ -444,6 +457,7 @@ Precedence:
 - If a project record loads but its pane descriptors are invalid, drop the invalid descriptors and reopen only the overview pane for that project.
 - If dock-state restoration fails for a project window, keep that project window open with its panes in the default layout and include the failure in the aggregated restore error.
 - If a restore failure happens after a project window has been created but before it is usable, destroy that partial window and continue restoring the remaining projects.
+- During restore, profile-initialization and first-pane-open failures are included in the aggregated restore error instead of showing immediate standalone dialogs.
 
 ### Shared server runtime
 
@@ -502,6 +516,7 @@ At minimum, MVP planning and implementation should cover:
 - Routing test: same-window navigation, new-window navigation, external links, and downloads follow the navigation policy.
 - Isolation test: two open projects do not share web-profile storage.
 - Persistence test: project-window geometry, active pane, and pane layout survive clean restart.
+- Lifecycle race test: first-load `projectOpened`, late `projectClosed`, and restore-time profile or initial-pane failures behave according to the lifecycle contract.
 - Failure test: broken pane load shows a recoverable in-app error path.
 
 Manual verification on Windows is mandatory because the mouse-profile use case is the primary product reason for the change.
