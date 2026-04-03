@@ -2075,6 +2075,8 @@ class ProjectWindow(QMainWindow):
                     key=lambda item: self._pane_focus_order.get(item.pane_instance_id, 0),
                 )
                 self.note_pane_activated(next_pane)
+                next_pane.raise_()
+                next_pane.setFocus()
 
         if not self.panes:
             if was_error_pane:
@@ -2443,6 +2445,9 @@ class AppWorkspaceController:
 
     # --- Quit handling ---
 
+    def has_project_windows(self) -> bool:
+        return bool(self.project_windows)
+
     def has_open_projects(self) -> bool:
         return bool(self.open_projects)
 
@@ -2571,12 +2576,17 @@ Replace with:
 
 ```python
     def closeEvent(self, event):
-        has_open = (
+        has_workspace = (
+            self.controller.has_project_windows()
+            if self.controller is not None
+            else bool(self.openProjects)
+        )
+        needs_confirm = (
             self.controller.has_open_projects()
             if self.controller is not None
             else bool(self.openProjects)
         )
-        if has_open:
+        if needs_confirm:
             response = showMessageDialog(
                 "There are still open fonts, are you sure you want to quit?",
                 "Quitting Fontra Pak will close all project windows.",
@@ -2588,9 +2598,9 @@ Replace with:
                 event.ignore()
                 return
 
-            if self.controller is not None:
-                self.controller.begin_bulk_shutdown()
-                self.controller.close_all_project_windows()
+        if has_workspace and self.controller is not None:
+            self.controller.begin_bulk_shutdown()
+            self.controller.close_all_project_windows()
 
         self.settings.setValue("size", self.size())
         self.settings.setValue("pos", self.pos())
@@ -3523,12 +3533,83 @@ git add fontra_pak/persistence.py tests/test_persistence.py
 git commit -m "feat: implement workspace persistence serialization"
 ```
 
-### Task 25: Add save_workspace to the controller
+### Task 25: Add workspace snapshot and save support
 
 **Files:**
 - Modify: `fontra_pak/controller.py`
+- Modify: `fontra_pak/launcher.py`
+- Create: `tests/test_controller_workspace_save.py`
 
-- [ ] **Step 1: Add the `save_workspace` method to `AppWorkspaceController`**
+- [ ] **Step 1: Write failing tests for shutdown snapshot persistence**
+
+```python
+# tests/test_controller_workspace_save.py
+import json
+
+from fontra_pak.controller import AppWorkspaceController
+from fontra_pak.view_descriptor import ViewDescriptor
+
+
+class FakeSettings:
+    def __init__(self):
+        self.values = {}
+
+    def setValue(self, key, value):
+        self.values[key] = value
+
+    def value(self, key, default=None):
+        return self.values.get(key, default)
+
+
+class FakePane:
+    def __init__(self, pane_instance_id, descriptor):
+        self.pane_instance_id = pane_instance_id
+        self.descriptor = descriptor
+
+
+class FakeWindow:
+    def __init__(self, project_key, project_path):
+        self.project_key = project_key
+        self.project_path = project_path
+        self.panes = [
+            FakePane("pane-1", ViewDescriptor.for_overview(project_key)),
+        ]
+        self.active_pane_instance_id = "pane-1"
+
+    def saveGeometry(self):
+        return b"geom"
+
+    def saveState(self):
+        return b"dock"
+
+
+def test_save_workspace_uses_captured_snapshot_after_windows_close():
+    controller = AppWorkspaceController(
+        "localhost",
+        8080,
+        project_window_cls=lambda **kwargs: None,
+        profile_factory=lambda _project_key: object(),
+    )
+    controller.project_windows = {
+        "demo-key": FakeWindow("demo-key", "C:\\Fonts\\Demo.ufo")
+    }
+    settings = FakeSettings()
+
+    controller.capture_workspace_snapshot()
+    controller.project_windows = {}
+    controller.save_workspace(settings)
+
+    payload = json.loads(settings.value("workspace"))
+    assert payload["projects"][0]["project_key"] == "demo-key"
+```
+
+- [ ] **Step 2: Run tests - they should fail**
+
+Run: `pytest tests/test_controller_workspace_save.py -v`
+
+Expected: `AttributeError` because `capture_workspace_snapshot` does not exist yet.
+
+- [ ] **Step 3: Add snapshot-aware workspace serialization to `AppWorkspaceController`**
 
 Add these imports at the top of `fontra_pak/controller.py`, after the existing imports:
 
@@ -3536,10 +3617,16 @@ Add these imports at the top of `fontra_pak/controller.py`, after the existing i
 from fontra_pak.persistence import serialize_project_record, serialize_workspace
 ```
 
-Then add this method to the `AppWorkspaceController` class, after the `close_all_project_windows` method:
+Add this attribute in `AppWorkspaceController.__init__`:
 
 ```python
-    def save_workspace(self, settings):
+        self._pending_workspace_payload = None
+```
+
+Then add these methods to the `AppWorkspaceController` class after `close_all_project_windows`:
+
+```python
+    def _serialize_workspace_payload(self) -> str:
         project_records = []
         for project_key, window in self.project_windows.items():
             pane_records = []
@@ -3557,14 +3644,41 @@ Then add this method to the `AppWorkspaceController` class, after the `close_all
                 dock_state=bytes(window.saveState()),
             )
             project_records.append(record)
-        settings.setValue("workspace", serialize_workspace({"projects": project_records}))
+        return serialize_workspace({"projects": project_records})
+
+    def capture_workspace_snapshot(self):
+        self._pending_workspace_payload = self._serialize_workspace_payload()
+
+    def save_workspace(self, settings):
+        payload = self._pending_workspace_payload
+        if payload is None:
+            payload = self._serialize_workspace_payload()
+        settings.setValue("workspace", payload)
+        self._pending_workspace_payload = None
 ```
 
-- [ ] **Step 2: Commit**
+- [ ] **Step 4: Amend launcher quit handling to capture the workspace before bulk shutdown**
+
+In `fontra_pak/launcher.py`, update the revised `closeEvent()` from Task 22A so the bulk-shutdown branch becomes:
+
+```python
+        if has_workspace and self.controller is not None:
+            self.controller.capture_workspace_snapshot()
+            self.controller.begin_bulk_shutdown()
+            self.controller.close_all_project_windows()
+```
+
+- [ ] **Step 5: Run tests - they should pass**
+
+Run: `pytest tests/test_controller_workspace_save.py -v`
+
+Expected: All PASS.
+
+- [ ] **Step 6: Commit**
 
 ```bash
-git add fontra_pak/controller.py
-git commit -m "feat: add save_workspace to controller"
+git add fontra_pak/controller.py fontra_pak/launcher.py tests/test_controller_workspace_save.py
+git commit -m "feat: preserve workspace during launcher-triggered shutdown"
 ```
 
 ## 2026-04-03 Revision Block B
@@ -3612,6 +3726,10 @@ class FakeWindow:
         self.restored_geometry = None
         self.restored_state = None
         self.focused_pane_instance_id = None
+        self.restore_geometry_result = kwargs.get("restore_geometry_result", True)
+        self.restore_state_result = kwargs.get("restore_state_result", True)
+        self.fail_on_open_view = kwargs.get("fail_on_open_view", False)
+        self.closed = False
 
     def show(self):
         pass
@@ -3623,15 +3741,17 @@ class FakeWindow:
         pass
 
     def open_view(self, descriptor, pane_instance_id=None):
+        if self.fail_on_open_view:
+            raise RuntimeError("boom")
         self.opened_descriptors.append((descriptor, pane_instance_id))
 
     def restoreGeometry(self, value):
         self.restored_geometry = value
-        return True
+        return self.restore_geometry_result
 
     def restoreState(self, value):
         self.restored_state = value
-        return True
+        return self.restore_state_result
 
     def focus_pane_instance(self, pane_instance_id):
         self.focused_pane_instance_id = pane_instance_id
@@ -3641,16 +3761,18 @@ class FakeWindow:
         pass
 
     def close(self):
-        pass
+        self.closed = True
 
     def show_connection_lost(self):
         pass
 
 
-def make_controller():
+def make_controller(window_overrides=None):
     created_windows = []
+    window_overrides = window_overrides or {}
 
     def fake_window_cls(**kwargs):
+        kwargs.update(window_overrides.get(kwargs["project_path"], {}))
         window = FakeWindow(**kwargs)
         created_windows.append(window)
         return window
@@ -3750,6 +3872,92 @@ def test_restore_workspace_falls_back_to_overview_when_all_descriptors_invalid(t
     assert errors == [
         f"No valid pane descriptors were saved for {project_path}; reopening overview."
     ]
+
+
+def test_restore_workspace_reports_restore_state_false(tmp_path):
+    project_path = tmp_path / "Demo.ufo"
+    project_path.touch()
+    controller, created_windows = make_controller(
+        {str(project_path): {"restore_state_result": False}}
+    )
+    project_key = path_to_project_key(str(project_path))
+    workspace_payload = serialize_workspace(
+        {
+            "projects": [
+                serialize_project_record(
+                    project_key=project_key,
+                    project_path=str(project_path),
+                    active_pane_instance_id=None,
+                    pane_records=[
+                        {
+                            "pane_instance_id": "pane-1",
+                            "descriptor": ViewDescriptor.for_overview(project_key).to_dict(),
+                        }
+                    ],
+                    geometry=b"geom",
+                    dock_state=b"dock",
+                )
+            ]
+        }
+    )
+
+    errors = controller.restore_workspace(FakeSettings(workspace_payload))
+
+    assert len(created_windows) == 1
+    assert errors == [f"Failed to restore dock layout for {project_path}"]
+
+
+def test_restore_workspace_closes_partial_window_after_open_view_failure(tmp_path):
+    broken_path = tmp_path / "Broken.ufo"
+    broken_path.touch()
+    healthy_path = tmp_path / "Healthy.ufo"
+    healthy_path.touch()
+    controller, created_windows = make_controller(
+        {str(broken_path): {"fail_on_open_view": True}}
+    )
+    broken_key = path_to_project_key(str(broken_path))
+    healthy_key = path_to_project_key(str(healthy_path))
+    workspace_payload = serialize_workspace(
+        {
+            "projects": [
+                serialize_project_record(
+                    project_key=broken_key,
+                    project_path=str(broken_path),
+                    active_pane_instance_id=None,
+                    pane_records=[
+                        {
+                            "pane_instance_id": "broken-pane",
+                            "descriptor": ViewDescriptor.for_overview(broken_key).to_dict(),
+                        }
+                    ],
+                    geometry=b"geom",
+                    dock_state=b"dock",
+                ),
+                serialize_project_record(
+                    project_key=healthy_key,
+                    project_path=str(healthy_path),
+                    active_pane_instance_id=None,
+                    pane_records=[
+                        {
+                            "pane_instance_id": "healthy-pane",
+                            "descriptor": ViewDescriptor.for_overview(healthy_key).to_dict(),
+                        }
+                    ],
+                    geometry=b"geom",
+                    dock_state=b"dock",
+                ),
+            ]
+        }
+    )
+
+    errors = controller.restore_workspace(FakeSettings(workspace_payload))
+
+    assert errors == [f"Failed to restore {broken_path}: boom"]
+    assert created_windows[0].closed is True
+    assert healthy_key in controller.project_windows
+    assert created_windows[1].opened_descriptors == [
+        (ViewDescriptor.for_overview(healthy_key), "healthy-pane")
+    ]
 ```
 
 - [ ] **Step 2: Run tests - they should fail**
@@ -3794,37 +4002,45 @@ Then add this method after `save_workspace()` if you already completed Task 25, 
 
             window, _created = self.get_or_create_project_window(project_path)
             if window is None:
-                errors.append(f"Failed to restore {project_path}: project window could not be created")
+                errors.append(
+                    f"Failed to restore {project_path}: project window could not be created"
+                )
                 continue
 
             try:
-                window.restoreGeometry(record["geometry"])
-            except Exception:
-                errors.append(f"Failed to restore geometry for {project_path}")
+                if window.restoreGeometry(record["geometry"]) is False:
+                    errors.append(f"Failed to restore geometry for {project_path}")
 
-            valid_panes = []
-            for pane_record in record["pane_records"]:
-                descriptor = validate_pane_record(pane_record)
-                if descriptor is not None:
-                    valid_panes.append((descriptor, pane_record.get("pane_instance_id")))
+                valid_panes = []
+                for pane_record in record["pane_records"]:
+                    descriptor = validate_pane_record(pane_record)
+                    pane_instance_id = pane_record.get("pane_instance_id")
+                    if descriptor is not None and pane_instance_id:
+                        valid_panes.append((descriptor, pane_instance_id))
 
-            if not valid_panes:
-                errors.append(
-                    f"No valid pane descriptors were saved for {project_path}; reopening overview."
-                )
-                window.open_view(default_overview_descriptor(window.project_key))
-            else:
-                for descriptor, pane_instance_id in valid_panes:
-                    window.open_view(descriptor, pane_instance_id=pane_instance_id)
+                if not valid_panes:
+                    errors.append(
+                        f"No valid pane descriptors were saved for {project_path}; reopening overview."
+                    )
+                    window.open_view(default_overview_descriptor(window.project_key))
+                else:
+                    for descriptor, pane_instance_id in valid_panes:
+                        window.open_view(descriptor, pane_instance_id=pane_instance_id)
 
-            try:
-                window.restoreState(record["dock_state"])
-            except Exception:
-                errors.append(f"Failed to restore dock layout for {project_path}")
+                if window.restoreState(record["dock_state"]) is False:
+                    errors.append(f"Failed to restore dock layout for {project_path}")
 
-            target_id = record["active_pane_instance_id"]
-            if target_id and not window.focus_pane_instance(target_id):
-                errors.append(f"Saved active pane was missing for {project_path}")
+                target_id = record["active_pane_instance_id"]
+                if target_id and not window.focus_pane_instance(target_id):
+                    errors.append(f"Saved active pane was missing for {project_path}")
+            except Exception as exc:
+                self.unregister_project_window(window)
+                try:
+                    window.close()
+                except Exception:
+                    pass
+                errors.append(f"Failed to restore {project_path}: {exc}")
+                continue
 
         return errors
 ```
@@ -3842,14 +4058,178 @@ git add fontra_pak/controller.py tests/test_controller_restore.py
 git commit -m "feat: restore saved panes without losing the first descriptor"
 ```
 
-### Task 27A: Revised app-level restore verification
+### Task 27A: Revised app startup and restore precedence
 
 **Files:**
 - Modify: `fontra_pak/app.py`
+- Create: `tests/test_startup_precedence.py`
 
-Use the original Task 27 code edits, but replace the manual verification checklist with the one below so restore is validated against the bug that prompted this revision.
+- [ ] **Step 1: Write failing startup precedence tests**
 
-- [ ] **Step 1: Verify save and restore preserve the first pane**
+```python
+# tests/test_startup_precedence.py
+from fontra_pak.app import classify_startup_requests
+
+
+def test_explicit_existing_paths_skip_restore(tmp_path):
+    project_path = tmp_path / "Demo.ufo"
+    project_path.touch()
+
+    requests = classify_startup_requests(["fontra-pak", str(project_path)])
+
+    assert requests == {
+        "explicit_paths": [str(project_path)],
+        "has_explicit_project_args": True,
+        "should_restore_workspace": False,
+        "is_startup_smoke_test": False,
+    }
+
+
+def test_explicit_missing_paths_still_skip_restore():
+    requests = classify_startup_requests(["fontra-pak", "missing-demo.ufo"])
+
+    assert requests == {
+        "explicit_paths": [],
+        "has_explicit_project_args": True,
+        "should_restore_workspace": False,
+        "is_startup_smoke_test": False,
+    }
+
+
+def test_no_explicit_paths_restores_workspace():
+    requests = classify_startup_requests(["fontra-pak", "--flag"])
+
+    assert requests == {
+        "explicit_paths": [],
+        "has_explicit_project_args": False,
+        "should_restore_workspace": True,
+        "is_startup_smoke_test": False,
+    }
+
+
+def test_test_startup_sentinel_is_not_treated_as_project_request():
+    requests = classify_startup_requests(["fontra-pak", "test-startup"])
+
+    assert requests == {
+        "explicit_paths": [],
+        "has_explicit_project_args": False,
+        "should_restore_workspace": False,
+        "is_startup_smoke_test": True,
+    }
+```
+
+- [ ] **Step 2: Run tests - they should fail**
+
+Run: `pytest tests/test_startup_precedence.py -v`
+
+Expected: `ImportError` or `AttributeError` because `classify_startup_requests` does not exist yet.
+
+- [ ] **Step 3: Add `classify_startup_requests()` and wire save/restore lifecycle in `fontra_pak/app.py`**
+
+Add `import os` near the top of `fontra_pak/app.py`, change the QtCore import to include `QSettings`, then add this helper above `main()`:
+
+```python
+def classify_startup_requests(argv):
+    non_flag_args = [arg for arg in argv[1:] if not arg.startswith("-")]
+    is_startup_smoke_test = "test-startup" in non_flag_args
+    candidate_args = [arg for arg in non_flag_args if arg != "test-startup"]
+    explicit_paths = [arg for arg in candidate_args if os.path.exists(arg)]
+    has_explicit_project_args = bool(candidate_args)
+    return {
+        "explicit_paths": explicit_paths,
+        "has_explicit_project_args": has_explicit_project_args,
+        "should_restore_workspace": (
+            not has_explicit_project_args and not is_startup_smoke_test
+        ),
+        "is_startup_smoke_test": is_startup_smoke_test,
+    }
+```
+
+Then update `main()` in three places.
+
+First, insert this line immediately after:
+
+```python
+    app = FontraApplication(sys.argv, port, controller)
+```
+
+Insert:
+
+```python
+    startup = classify_startup_requests(sys.argv)
+```
+
+Second, replace this block:
+
+```python
+    app.aboutToQuit.connect(cleanup)
+
+    mainWindow = FontraMainWidget(port, controller)
+```
+
+with:
+
+```python
+    settings = QSettings("xyz.fontra", "FontraPak")
+
+    def save_and_cleanup():
+        if not startup["is_startup_smoke_test"]:
+            controller.save_workspace(settings)
+        cleanup()
+
+    app.aboutToQuit.connect(save_and_cleanup)
+
+    mainWindow = FontraMainWidget(port, controller)
+```
+
+Third, replace this block:
+
+```python
+    mainWindow.show()
+
+    if "test-startup" in sys.argv:
+```
+
+with:
+
+```python
+    mainWindow.show()
+
+    if startup["explicit_paths"]:
+        for path in startup["explicit_paths"]:
+            controller.open_project(path)
+    elif startup["has_explicit_project_args"]:
+        from fontra_pak.dialogs import showMessageDialog
+
+        showMessageDialog(
+            "Some startup projects could not be opened",
+            "The app was launched with explicit project paths, but none of them were readable.",
+            detailedText="\n".join(
+                arg
+                for arg in sys.argv[1:]
+                if not arg.startswith("-") and arg != "test-startup"
+            ),
+        )
+    elif startup["should_restore_workspace"]:
+        errors = controller.restore_workspace(settings)
+        if errors:
+            from fontra_pak.dialogs import showMessageDialog
+
+            showMessageDialog(
+                "Some projects could not be restored",
+                "\n".join(errors),
+            )
+
+    if "test-startup" in sys.argv:
+```
+
+- [ ] **Step 4: Run tests - they should pass**
+
+Run: `pytest tests/test_startup_precedence.py -v`
+
+Expected: All PASS.
+
+- [ ] **Step 5: Verify save and restore preserve the first pane**
 
 Run: `python -m fontra_pak`
 
@@ -3859,11 +4239,12 @@ Manual checks:
 3. Quit the app cleanly.
 4. Re-launch: `python -m fontra_pak`
 5. The first restored pane should still be the editor route, the second pane should still be `Font Info`, and the previously active pane should be focused.
+6. Launch the app with a nonexistent explicit project argument and verify it does not restore the last workspace.
 
-- [ ] **Step 2: Keep the original Task 27 commit step**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add fontra_pak/app.py
+git add fontra_pak/app.py tests/test_startup_precedence.py
 git commit -m "feat: wire workspace save/restore into app lifecycle"
 ```
 

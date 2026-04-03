@@ -99,6 +99,30 @@ Required fix:
 
 - Expand manual verification so both drag/drop and "New Font..." are required checks for the launcher-to-controller handoff.
 
+### 8. Restore behavior still missed Qt failure modes and partial-window cleanup
+
+Problems:
+
+- `restoreGeometry()` and `restoreState()` can fail by returning `False` without throwing.
+- Restore-time pane creation failures could leave partially created project windows alive.
+
+Required fix:
+
+- Treat `False` return values as restore failures that contribute to the aggregated restore error list.
+- Close and unregister partial windows when restore-time pane creation fails, then continue restoring remaining projects.
+
+### 9. Startup precedence needed smoke-test handling and self-contained save wiring
+
+Problems:
+
+- The `test-startup` sentinel could be misclassified as a missing explicit project path.
+- The revised startup task initially omitted the `QSettings` creation and `controller.save_workspace(settings)` hookup, which made the block incomplete as a standalone replacement.
+
+Required fix:
+
+- Make startup classification explicitly ignore the `test-startup` sentinel for project-open precedence.
+- Restate the save-on-quit and restore-on-start wiring directly inside the revised startup task.
+
 ## Remediation Map
 
 - Task 15: expand project identity helpers and tests
@@ -109,6 +133,8 @@ Required fix:
 - Task 21: replace placeholder controller tests with real dependency-injected tests
 - Task 22: add explicit launcher verification for drag/drop and "New Font..."
 - Task 25-26: preserve every restored pane and make overview fallback explicit
+- Task 26: handle Qt restore false returns and partial-window cleanup
+- Task 27: make startup precedence sentinel-safe and self-contained
 
 ## Exit Criteria For The Revised Plan
 
@@ -118,3 +144,5 @@ Required fix:
 - One project download request results in one native download dialog.
 - Pane reuse is based on actual activation order, not creation order.
 - Controller tests fail before implementation and exercise real controller behavior.
+- Restore treats both thrown exceptions and `False` Qt return values as reportable failures.
+- The startup smoke-test path is preserved without being mistaken for an explicit project request.
