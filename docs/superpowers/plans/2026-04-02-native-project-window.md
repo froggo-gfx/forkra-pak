@@ -1113,9 +1113,12 @@ import sys
 import pytest
 
 from fontra_pak.project_identity import (
+    canonical_callback_project_key,
+    decode_project_query_value,
     encode_project_query_value,
     path_to_project_key,
     project_key_to_profile_dir_name,
+    resolve_project_path,
 )
 
 
@@ -1123,6 +1126,11 @@ def test_path_to_project_key_resolves_and_normcases():
     path = pathlib.Path(__file__).resolve()
     key = path_to_project_key(str(path))
     assert key == os.path.normcase(str(path))
+
+
+def test_resolve_project_path_returns_absolute_path():
+    resolved = resolve_project_path(".")
+    assert pathlib.Path(resolved).is_absolute()
 
 
 def test_path_to_project_key_different_case_same_key():
@@ -1133,19 +1141,32 @@ def test_path_to_project_key_different_case_same_key():
     assert key1 == key2
 
 
-def test_encode_project_query_value_no_backslashes():
+def test_encode_project_query_value_matches_current_windows_wire_format():
     if sys.platform != "win32":
         pytest.skip("Drive letter test only on Windows")
-    value = encode_project_query_value("C:\\Users\\Test\\My Font.ufo")
-    assert "\\" not in value
-    assert "My%20Font.ufo" in value
+    value = encode_project_query_value("C:\\Fonts\\Demo Font.ufo")
+    assert value == "C%3A%5C/Fonts/Demo%20Font.ufo"
 
 
-def test_encode_project_query_value_unix():
+def test_decode_project_query_value_round_trips_windows_drive_path():
+    if sys.platform != "win32":
+        pytest.skip("Drive letter test only on Windows")
+    decoded = decode_project_query_value("C%3A%5C/Fonts/Demo%20Font.ufo")
+    assert decoded == resolve_project_path("C:\\Fonts\\Demo Font.ufo")
+
+
+def test_encode_and_decode_project_query_value_round_trip_posix_absolute_path():
     if sys.platform == "win32":
         pytest.skip("Unix path test only on Unix")
-    value = encode_project_query_value("/home/user/My Font.ufo")
-    assert value == "home/user/My%20Font.ufo"
+    path = "/home/user/My Font.ufo"
+    encoded = encode_project_query_value(path)
+    assert encoded == "home/user/My%20Font.ufo"
+    assert decode_project_query_value(encoded) == resolve_project_path(path)
+
+
+def test_canonical_callback_project_key_uses_shared_contract():
+    path = str(pathlib.Path(__file__).resolve())
+    assert canonical_callback_project_key(path) == path_to_project_key(path)
 
 
 def test_profile_dir_name_is_hex_hash():
@@ -1179,22 +1200,45 @@ Expected: `ModuleNotFoundError: No module named 'fontra_pak.project_identity'`
 import hashlib
 import os
 import pathlib
-from urllib.parse import quote
+from urllib.parse import quote, unquote
+
+
+def resolve_project_path(path: str) -> str:
+    return str(pathlib.Path(path).resolve())
 
 
 def path_to_project_key(path: str) -> str:
-    resolved = str(pathlib.Path(path).resolve())
-    return os.path.normcase(resolved)
+    return os.path.normcase(resolve_project_path(path))
 
 
 def encode_project_query_value(path: str) -> str:
-    path_obj = pathlib.Path(path).resolve()
+    path_obj = pathlib.Path(resolve_project_path(path))
     assert path_obj.is_absolute()
     parts = list(path_obj.parts)
     if not path_obj.drive:
-        assert parts[0] == "/"
+        assert parts[0] == os.sep
         del parts[0]
     return "/".join(quote(part, safe="") for part in parts)
+
+
+def decode_project_query_value(project_query_value: str) -> str:
+    decoded_parts = [unquote(part) for part in project_query_value.split("/") if part]
+    if not decoded_parts:
+        raise ValueError("Missing project path parts")
+
+    first_part = decoded_parts[0]
+    if first_part.endswith("\\") or first_part.endswith("/") or (
+        len(first_part) >= 2 and first_part[1] == ":"
+    ):
+        reconstructed = pathlib.Path(first_part, *decoded_parts[1:])
+    else:
+        reconstructed = pathlib.Path(os.sep, *decoded_parts)
+
+    return resolve_project_path(str(reconstructed))
+
+
+def canonical_callback_project_key(project_identifier: str) -> str:
+    return path_to_project_key(project_identifier)
 
 
 def project_key_to_profile_dir_name(project_key: str) -> str:
@@ -1224,7 +1268,7 @@ git commit -m "feat: implement project identity contract"
 
 ```python
 # tests/test_view_descriptor.py
-from fontra_pak.view_descriptor import ViewDescriptor
+from fontra_pak.view_descriptor import ViewDescriptor, default_overview_descriptor
 
 
 def test_overview_fields():
@@ -1260,14 +1304,14 @@ def test_applicationsettings_fields():
 
 def test_build_url_with_hash():
     d = ViewDescriptor.for_editor("c:\\fonts\\demo.ufo", route_hash="#glyph=A")
-    url = d.build_url("localhost", 8080, "C%3A/fonts/demo.ufo")
-    assert url == "http://localhost:8080/editor.html?project=C%3A/fonts/demo.ufo#glyph=A"
+    url = d.build_url("localhost", 8080, "C%3A%5C/Fonts/Demo.ufo")
+    assert url == "http://localhost:8080/editor.html?project=C%3A%5C/Fonts/Demo.ufo#glyph=A"
 
 
 def test_build_url_without_hash():
     d = ViewDescriptor.for_overview("c:\\fonts\\demo.ufo")
-    url = d.build_url("localhost", 8080, "C%3A/fonts/demo.ufo")
-    assert url == "http://localhost:8080/fontoverview.html?project=C%3A/fonts/demo.ufo"
+    url = d.build_url("localhost", 8080, "C%3A%5C/Fonts/Demo.ufo")
+    assert url == "http://localhost:8080/fontoverview.html?project=C%3A%5C/Fonts/Demo.ufo"
 
 
 def test_matches_same_kind_same_project():
@@ -1288,10 +1332,10 @@ def test_no_match_different_project():
     assert not d1.matches(d2)
 
 
-def test_matches_ignores_route_hash():
+def test_matches_different_editor_hashes_do_not_match():
     d1 = ViewDescriptor.for_editor("c:\\fonts\\demo.ufo", route_hash="#glyph=A")
     d2 = ViewDescriptor.for_editor("c:\\fonts\\demo.ufo", route_hash="#glyph=B")
-    assert d1.matches(d2)
+    assert not d1.matches(d2)
 
 
 def test_from_page_path_known():
@@ -1313,6 +1357,11 @@ def test_to_dict_round_trip():
     assert original.page_path == restored.page_path
     assert original.route_hash == restored.route_hash
     assert original.title_hint == restored.title_hint
+
+
+def test_default_overview_descriptor():
+    descriptor = default_overview_descriptor("demo-key")
+    assert descriptor == ViewDescriptor.for_overview("demo-key")
 ```
 
 - [ ] **Step 2: Run tests — they should fail**
@@ -1395,10 +1444,11 @@ class ViewDescriptor:
             url += self.route_hash
         return url
 
+    def route_identity(self) -> tuple[str, str, str]:
+        return (self.project_key, self.page_path, self.route_hash)
+
     def matches(self, other: ViewDescriptor) -> bool:
-        return (self.project_key == other.project_key
-                and self.view_kind == other.view_kind
-                and self.page_path == other.page_path)
+        return self.route_identity() == other.route_identity()
 
     def to_dict(self) -> dict:
         return {"project_key": self.project_key, "view_kind": self.view_kind,
@@ -1410,6 +1460,10 @@ class ViewDescriptor:
         return cls(project_key=data["project_key"], view_kind=data["view_kind"],
                    page_path=data["page_path"], route_hash=data["route_hash"],
                    title_hint=data["title_hint"])
+
+
+def default_overview_descriptor(project_key: str) -> ViewDescriptor:
+    return ViewDescriptor.for_overview(project_key)
 ```
 
 - [ ] **Step 4: Run tests — they should pass**
@@ -1435,23 +1489,32 @@ git commit -m "feat: implement ViewDescriptor"
 
 ```python
 # tests/test_routing.py
+import sys
+
+import pytest
+
+from fontra_pak.project_identity import encode_project_query_value
 from fontra_pak.routing import RouteClass, classify_url
 
 
 def test_internal_fontoverview():
+    encoded = encode_project_query_value("C:\\Fonts\\Demo.ufo") if sys.platform == "win32" else encode_project_query_value("/tmp/demo.ufo")
+    owner_key = "c:\\fonts\\demo.ufo" if sys.platform == "win32" else "/tmp/demo.ufo"
     result = classify_url(
-        "http://localhost:8080/fontoverview.html?project=C%3A/fonts/demo.ufo",
+        f"http://localhost:8080/fontoverview.html?project={encoded}",
         host="localhost", port=8080,
-        owner_project_key="c:\\fonts\\demo.ufo",
+        owner_project_key=owner_key,
     )
     assert result.route_class == RouteClass.INTERNAL
     assert result.page_path == "/fontoverview.html"
     assert result.route_hash == ""
 
 
-def test_internal_editor_with_hash():
+def test_internal_editor_with_existing_windows_wire_format():
+    if sys.platform != "win32":
+        pytest.skip("Windows wire-format lock only on Windows")
     result = classify_url(
-        "http://localhost:8080/editor.html?project=C%3A/fonts/demo.ufo#glyph=A",
+        "http://localhost:8080/editor.html?project=C%3A%5C/Fonts/Demo.ufo#glyph=A",
         host="localhost", port=8080,
         owner_project_key="c:\\fonts\\demo.ufo",
     )
@@ -1497,19 +1560,23 @@ def test_rejected_missing_project_param():
 
 
 def test_rejected_different_project():
+    other = encode_project_query_value("C:\\Fonts\\Other.ufo") if sys.platform == "win32" else encode_project_query_value("/tmp/other.ufo")
+    owner_key = "c:\\fonts\\demo.ufo" if sys.platform == "win32" else "/tmp/demo.ufo"
     result = classify_url(
-        "http://localhost:8080/editor.html?project=C%3A/fonts/other.ufo",
+        f"http://localhost:8080/editor.html?project={other}",
         host="localhost", port=8080,
-        owner_project_key="c:\\fonts\\demo.ufo",
+        owner_project_key=owner_key,
     )
     assert result.route_class == RouteClass.REJECTED
 
 
 def test_rejected_unknown_same_origin_path():
+    encoded = encode_project_query_value("C:\\Fonts\\Demo.ufo") if sys.platform == "win32" else encode_project_query_value("/tmp/demo.ufo")
+    owner_key = "c:\\fonts\\demo.ufo" if sys.platform == "win32" else "/tmp/demo.ufo"
     result = classify_url(
-        "http://localhost:8080/somethingelse.html?project=C%3A/fonts/demo.ufo",
+        f"http://localhost:8080/somethingelse.html?project={encoded}",
         host="localhost", port=8080,
-        owner_project_key="c:\\fonts\\demo.ufo",
+        owner_project_key=owner_key,
     )
     assert result.route_class == RouteClass.REJECTED
 ```
@@ -1526,12 +1593,11 @@ Expected: `ModuleNotFoundError`
 # fontra_pak/routing.py
 from __future__ import annotations
 
-import os
-import pathlib
 from dataclasses import dataclass
 from enum import Enum, auto
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, urlparse
 
+from fontra_pak.project_identity import decode_project_query_value, path_to_project_key
 from fontra_pak.view_descriptor import KNOWN_PAGE_PATHS
 
 
@@ -1563,37 +1629,20 @@ def classify_url(
     if parsed.scheme not in ("http", "") or parsed.netloc != expected_netloc:
         return RouteResult(route_class=RouteClass.EXTERNAL)
 
-    # Same origin. Check if page path is one of the four known pages.
     page_path = parsed.path
     if page_path not in KNOWN_PAGE_PATHS:
         return RouteResult(route_class=RouteClass.REJECTED)
 
-    # Extract the ?project= query parameter value.
-    query = parsed.query
-    project_value = None
-    for param in query.split("&"):
-        if param.startswith("project="):
-            project_value = param[len("project="):]
-            break
-
-    if project_value is None:
+    project_values = parse_qs(parsed.query).get("project")
+    if not project_values:
         return RouteResult(route_class=RouteClass.REJECTED)
 
-    # Decode the project value back to a filesystem path, then canonicalize.
     try:
-        decoded_parts = [unquote(part) for part in project_value.split("/")]
-        if len(decoded_parts) >= 1 and ":" in decoded_parts[0]:
-            # Windows drive letter like "C:"
-            reconstructed = os.path.join(decoded_parts[0] + os.sep, *decoded_parts[1:])
-        else:
-            # Unix path
-            reconstructed = os.sep + os.path.join(*decoded_parts)
-        resolved = str(pathlib.Path(reconstructed).resolve())
-        project_key = os.path.normcase(resolved)
+        decoded_path = decode_project_query_value(project_values[0])
+        project_key = path_to_project_key(decoded_path)
     except Exception:
         return RouteResult(route_class=RouteClass.REJECTED)
 
-    # Check that the decoded project matches this window's project.
     if project_key != owner_project_key:
         return RouteResult(route_class=RouteClass.REJECTED)
 
@@ -1745,6 +1794,822 @@ class _NavigationTrapPage(QWebEnginePage):
 ```bash
 git add fontra_pak/navigation_bridge.py
 git commit -m "feat: implement PaneNavigationBridge"
+```
+
+## 2026-04-03 Revision Block A
+
+The following tasks supersede the original Task 19 through Task 22 definitions later in this file. Execute the revised tasks in this block and ignore the original versions below.
+
+### Task 19A: Revised WorkspacePane
+
+**Files:**
+- Create: `fontra_pak/workspace_pane.py`
+
+- [ ] **Step 1: Create `fontra_pak/workspace_pane.py`**
+
+```python
+# fontra_pak/workspace_pane.py
+from __future__ import annotations
+
+import secrets
+from typing import TYPE_CHECKING
+
+from PyQt6.QtCore import QEvent, QUrl
+from PyQt6.QtWebEngineCore import QWebEngineProfile
+from PyQt6.QtWebEngineWidgets import QWebEngineView
+from PyQt6.QtWidgets import QDockWidget, QLabel, QPushButton, QVBoxLayout, QWidget
+
+from fontra_pak.navigation_bridge import PaneNavigationBridge
+from fontra_pak.view_descriptor import ViewDescriptor
+
+if TYPE_CHECKING:
+    from fontra_pak.project_window import ProjectWindow
+
+
+class WorkspacePane(QDockWidget):
+    def __init__(
+        self,
+        descriptor: ViewDescriptor,
+        profile: QWebEngineProfile,
+        host: str,
+        port: int,
+        project_query_value: str,
+        project_window: ProjectWindow,
+        pane_instance_id: str | None = None,
+    ):
+        super().__init__(descriptor.title_hint, project_window)
+        self.descriptor = descriptor
+        self.host = host
+        self.port = port
+        self.project_query_value = project_query_value
+        self.project_window = project_window
+        self.pane_instance_id = pane_instance_id or secrets.token_hex(8)
+        self._pending_trap = None
+
+        self.web_view = QWebEngineView()
+        page = PaneNavigationBridge(profile, self)
+        self.web_view.setPage(page)
+
+        page.titleChanged.connect(self._on_title_changed)
+        page.renderProcessTerminated.connect(self._on_render_crash)
+        self.web_view.installEventFilter(self)
+
+        self.setWidget(self.web_view)
+        self.reload_from_descriptor()
+
+    def page(self) -> PaneNavigationBridge:
+        return self.web_view.page()
+
+    def eventFilter(self, watched, event):
+        if watched is self.web_view and event.type() in {
+            QEvent.Type.FocusIn,
+            QEvent.Type.MouseButtonPress,
+        }:
+            self.project_window.note_pane_activated(self)
+        return super().eventFilter(watched, event)
+
+    def focusInEvent(self, event):
+        self.project_window.note_pane_activated(self)
+        super().focusInEvent(event)
+
+    def apply_descriptor(self, descriptor: ViewDescriptor):
+        self.descriptor = descriptor
+        self.update_title()
+
+    def update_title(self):
+        self.setWindowTitle(self.descriptor.title_hint)
+
+    def _on_title_changed(self, title: str):
+        if title and self.descriptor.view_kind == "editor":
+            self.descriptor.title_hint = title
+            self.setWindowTitle(title)
+
+    def _on_render_crash(self, termination_status, exit_code):
+        self._show_error_overlay(
+            f"The renderer process terminated (status={termination_status}, code={exit_code})."
+        )
+
+    def _show_error_overlay(self, message: str):
+        error_widget = QWidget()
+        layout = QVBoxLayout(error_widget)
+        layout.addWidget(QLabel(message))
+
+        reload_btn = QPushButton("Reload")
+        reload_btn.clicked.connect(self._reload_pane)
+        layout.addWidget(reload_btn)
+
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(lambda: self.project_window.close_pane(self))
+        layout.addWidget(close_btn)
+
+        self.setWidget(error_widget)
+
+    def reload_from_descriptor(self):
+        self.setWidget(self.web_view)
+        url = self.descriptor.build_url(self.host, self.port, self.project_query_value)
+        self.web_view.setUrl(QUrl(url))
+
+    def _reload_pane(self):
+        self.reload_from_descriptor()
+
+    def load_failed(self) -> bool:
+        return self.widget() is not self.web_view
+```
+
+- [ ] **Step 2: Commit**
+
+```bash
+git add fontra_pak/workspace_pane.py
+git commit -m "feat: implement WorkspacePane"
+```
+
+### Task 20A: Revised ProjectWindow
+
+**Files:**
+- Create: `fontra_pak/project_window.py`
+
+- [ ] **Step 1: Create `fontra_pak/project_window.py`**
+
+```python
+# fontra_pak/project_window.py
+from __future__ import annotations
+
+import logging
+import os
+from typing import TYPE_CHECKING
+
+from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import QFileDialog, QMainWindow, QMessageBox
+
+from fontra_pak.dialogs import showMessageDialog
+from fontra_pak.project_identity import encode_project_query_value
+from fontra_pak.view_descriptor import ViewDescriptor, default_overview_descriptor
+from fontra_pak.workspace_pane import WorkspacePane
+
+if TYPE_CHECKING:
+    from PyQt6.QtWebEngineCore import QWebEngineProfile
+    from fontra_pak.controller import AppWorkspaceController
+
+logger = logging.getLogger(__name__)
+
+
+class ProjectWindow(QMainWindow):
+    def __init__(
+        self,
+        project_key: str,
+        project_path: str,
+        profile: QWebEngineProfile,
+        host: str,
+        port: int,
+        controller: AppWorkspaceController,
+    ):
+        super().__init__()
+        self.project_key = project_key
+        self.project_path = project_path
+        self.profile = profile
+        self.host = host
+        self.port = port
+        self.controller = controller
+        self.project_query_value = encode_project_query_value(project_path)
+        self.panes: list[WorkspacePane] = []
+        self._active_pane: WorkspacePane | None = None
+        self._pane_focus_order: dict[str, int] = {}
+        self._focus_generation = 0
+        self._suppress_close_confirm = False
+
+        self.setWindowTitle(f"Fontra Pak - {project_path}")
+        self.setDockNestingEnabled(True)
+        self.profile.downloadRequested.connect(self._on_download_requested)
+        self._setup_menu_bar()
+
+    def _setup_menu_bar(self):
+        menu_bar = self.menuBar()
+        view_menu = menu_bar.addMenu("&View")
+        view_menu.addAction(
+            "Font Overview",
+            lambda: self.open_view(ViewDescriptor.for_overview(self.project_key)),
+        )
+        view_menu.addAction(
+            "Font Info",
+            lambda: self.open_view(ViewDescriptor.for_fontinfo(self.project_key)),
+        )
+        view_menu.addAction(
+            "Application Settings",
+            lambda: self.open_view(ViewDescriptor.for_applicationsettings(self.project_key)),
+        )
+
+    def open_initial_pane(self):
+        self.open_view(default_overview_descriptor(self.project_key))
+
+    def open_view(self, descriptor: ViewDescriptor, pane_instance_id: str | None = None):
+        if pane_instance_id is None:
+            pane = self._find_matching_pane(descriptor)
+            if pane is not None:
+                self.note_pane_activated(pane)
+                pane.raise_()
+                pane.setFocus()
+                return pane
+
+        return self._create_pane(descriptor, pane_instance_id=pane_instance_id)
+
+    def _find_matching_pane(self, descriptor: ViewDescriptor) -> WorkspacePane | None:
+        matching = [pane for pane in self.panes if pane.descriptor.matches(descriptor)]
+        if not matching:
+            return None
+        return max(
+            matching,
+            key=lambda pane: self._pane_focus_order.get(pane.pane_instance_id, 0),
+        )
+
+    def note_pane_activated(self, pane: WorkspacePane):
+        self._focus_generation += 1
+        self._pane_focus_order[pane.pane_instance_id] = self._focus_generation
+        self._active_pane = pane
+
+    def _create_pane(self, descriptor: ViewDescriptor, pane_instance_id: str | None = None):
+        pane = WorkspacePane(
+            descriptor=descriptor,
+            profile=self.profile,
+            host=self.host,
+            port=self.port,
+            project_query_value=self.project_query_value,
+            project_window=self,
+            pane_instance_id=pane_instance_id,
+        )
+        pane.setAllowedAreas(Qt.DockWidgetArea.AllDockWidgetAreas)
+
+        if self.panes:
+            self.addDockWidget(Qt.DockWidgetArea.TopDockWidgetArea, pane)
+            self.tabifyDockWidget(self.panes[-1], pane)
+        else:
+            self.addDockWidget(Qt.DockWidgetArea.TopDockWidgetArea, pane)
+
+        self.panes.append(pane)
+        self.note_pane_activated(pane)
+        pane.raise_()
+        pane.setFocus()
+        return pane
+
+    def focus_pane_instance(self, pane_instance_id: str) -> bool:
+        for pane in self.panes:
+            if pane.pane_instance_id == pane_instance_id:
+                self.note_pane_activated(pane)
+                pane.raise_()
+                pane.setFocus()
+                return True
+        return False
+
+    def close_pane(self, pane: WorkspacePane):
+        was_error_pane = pane.load_failed()
+        if pane in self.panes:
+            self.panes.remove(pane)
+        self._pane_focus_order.pop(pane.pane_instance_id, None)
+        self.removeDockWidget(pane)
+        pane.deleteLater()
+
+        if self._active_pane is pane:
+            self._active_pane = None
+            if self.panes:
+                next_pane = max(
+                    self.panes,
+                    key=lambda item: self._pane_focus_order.get(item.pane_instance_id, 0),
+                )
+                self.note_pane_activated(next_pane)
+
+        if not self.panes:
+            if was_error_pane:
+                self.close()
+            else:
+                self.open_initial_pane()
+
+    def _on_download_requested(self, download):
+        suggested_path = os.path.join(
+            os.path.expanduser("~"),
+            download.downloadFileName(),
+        )
+        save_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save download",
+            suggested_path,
+        )
+        if save_path:
+            download.setDownloadDirectory(os.path.dirname(save_path))
+            download.setDownloadFileName(os.path.basename(save_path))
+            download.accept()
+        else:
+            download.cancel()
+
+    def closeEvent(self, event):
+        if self._suppress_close_confirm:
+            event.accept()
+            self.controller.unregister_project_window(self)
+            return
+
+        if self.project_key in self.controller.open_projects:
+            response = showMessageDialog(
+                "Close project?",
+                f"The project {self.project_path} is still open in Fontra.\n"
+                "Closing this window will disconnect from the project.",
+                buttons=QMessageBox.StandardButton.Close | QMessageBox.StandardButton.Cancel,
+                defaultButton=QMessageBox.StandardButton.Cancel,
+            )
+            if response == QMessageBox.StandardButton.Cancel:
+                event.ignore()
+                return
+
+        event.accept()
+        self.controller.mark_project_locally_closed(self.project_key)
+        self.controller.unregister_project_window(self)
+
+    def suppress_close_confirm(self):
+        self._suppress_close_confirm = True
+
+    @property
+    def active_pane_instance_id(self) -> str | None:
+        if self._active_pane is not None:
+            return self._active_pane.pane_instance_id
+        return None
+
+    def show_connection_lost(self):
+        for pane in list(self.panes):
+            pane._show_error_overlay(
+                "Connection to the Fontra server has been lost.\n"
+                "You can try reloading after recovering the server, or close this window."
+            )
+```
+
+- [ ] **Step 2: Verify pane identity, activation, and download ownership**
+
+Run: `python -m fontra_pak`
+
+Manual checks:
+1. Open one project and create two editor panes that land on different glyph hashes. They should remain as two separate panes.
+2. Trigger the same glyph route again from Fontra. The already-focused matching pane should be reused instead of opening a duplicate.
+3. Switch focus between tabs, close the currently focused pane, and verify the most recently focused remaining pane becomes active.
+4. Open several panes and trigger one download. Only one native save dialog should appear.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add fontra_pak/project_window.py
+git commit -m "feat: implement ProjectWindow"
+```
+
+### Task 21A: Revised AppWorkspaceController
+
+**Files:**
+- Create: `fontra_pak/controller.py`
+- Create: `tests/test_controller_callbacks.py`
+
+- [ ] **Step 1: Write failing tests for callback routing**
+
+These tests instantiate the controller with fake profile/window factories so they exercise real controller methods instead of logic sketches.
+
+```python
+# tests/test_controller_callbacks.py
+from fontra_pak.controller import AppWorkspaceController
+from fontra_pak.project_identity import path_to_project_key
+from fontra_pak.view_descriptor import default_overview_descriptor
+
+
+class FakeWindow:
+    def __init__(self, **kwargs):
+        self.project_key = kwargs["project_key"]
+        self.project_path = kwargs["project_path"]
+        self.profile = kwargs["profile"]
+        self.opened_descriptors = []
+        self.raised = False
+        self.activated = False
+        self.connection_lost = False
+        self.closed = False
+
+    def show(self):
+        pass
+
+    def open_view(self, descriptor, pane_instance_id=None):
+        self.opened_descriptors.append((descriptor, pane_instance_id))
+
+    def raise_(self):
+        self.raised = True
+
+    def activateWindow(self):
+        self.activated = True
+
+    def suppress_close_confirm(self):
+        pass
+
+    def close(self):
+        self.closed = True
+
+    def show_connection_lost(self):
+        self.connection_lost = True
+
+
+def make_controller():
+    created_windows = []
+
+    def fake_window_cls(**kwargs):
+        window = FakeWindow(**kwargs)
+        created_windows.append(window)
+        return window
+
+    controller = AppWorkspaceController(
+        "localhost",
+        8080,
+        project_window_cls=fake_window_cls,
+        profile_factory=lambda _project_key: object(),
+    )
+    return controller, created_windows
+
+
+def test_open_project_creates_window_and_opens_default_overview(tmp_path):
+    controller, created_windows = make_controller()
+    project_path = str(tmp_path / "Demo.ufo")
+
+    controller.open_project(project_path)
+
+    assert len(created_windows) == 1
+    project_key = path_to_project_key(project_path)
+    assert created_windows[0].project_key == project_key
+    assert created_windows[0].opened_descriptors == [
+        (default_overview_descriptor(project_key), None)
+    ]
+
+
+def test_open_project_reuses_existing_window(tmp_path):
+    controller, created_windows = make_controller()
+    project_path = str(tmp_path / "Demo.ufo")
+
+    controller.open_project(project_path)
+    controller.open_project(project_path)
+
+    assert len(created_windows) == 1
+    assert created_windows[0].raised
+    assert created_windows[0].activated
+    assert len(created_windows[0].opened_descriptors) == 1
+
+
+def test_project_opened_callback_canonicalizes_identifier(tmp_path):
+    controller, _created_windows = make_controller()
+    project_path = str(tmp_path / "Demo.ufo")
+
+    controller.handle_server_message(("projectOpened", (project_path,)))
+
+    assert path_to_project_key(project_path) in controller.open_projects
+
+
+def test_recently_closed_suppresses_late_project_closed(tmp_path):
+    controller, _created_windows = make_controller()
+    project_path = str(tmp_path / "Demo.ufo")
+    project_key = path_to_project_key(project_path)
+    controller.open_projects.add(project_key)
+    controller._recently_closed.add(project_key)
+
+    controller.handle_server_message(("projectClosed", (project_path,)))
+
+    assert project_key in controller.open_projects
+    assert project_key not in controller._recently_closed
+
+
+def test_export_callback_receives_canonical_key(tmp_path):
+    controller, _created_windows = make_controller()
+    project_path = str(tmp_path / "Demo.ufo")
+    calls = []
+    controller.set_export_callback(lambda project_key, options: calls.append((project_key, options)))
+
+    controller.handle_server_message(("exportAs", (project_path, {"format": "otf"})))
+
+    assert calls == [(path_to_project_key(project_path), {"format": "otf"})]
+```
+
+- [ ] **Step 2: Run tests - they should fail**
+
+Run: `pytest tests/test_controller_callbacks.py -v`
+
+Expected: `ModuleNotFoundError: No module named 'fontra_pak.controller'`
+
+- [ ] **Step 3: Create `fontra_pak/controller.py`**
+
+```python
+# fontra_pak/controller.py
+from __future__ import annotations
+
+import logging
+import os
+
+from PyQt6.QtCore import QStandardPaths
+from PyQt6.QtWebEngineCore import QWebEngineProfile
+
+from fontra_pak.dialogs import showMessageDialog
+from fontra_pak.project_identity import (
+    canonical_callback_project_key,
+    path_to_project_key,
+    project_key_to_profile_dir_name,
+    resolve_project_path,
+)
+from fontra_pak.project_window import ProjectWindow
+from fontra_pak.view_descriptor import ViewDescriptor, default_overview_descriptor
+
+logger = logging.getLogger(__name__)
+
+
+class AppWorkspaceController:
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        *,
+        project_window_cls=ProjectWindow,
+        profile_factory=None,
+    ):
+        self.host = host
+        self.port = port
+        self.project_windows: dict[str, ProjectWindow] = {}
+        self.open_projects: set[str] = set()
+        self._recently_closed: set[str] = set()
+        self._export_callback = None
+        self._project_window_cls = project_window_cls
+        self._profile_factory = profile_factory
+
+    def get_or_create_project_window(self, path: str):
+        resolved_path = resolve_project_path(path)
+        project_key = path_to_project_key(resolved_path)
+
+        if project_key in self.project_windows:
+            window = self.project_windows[project_key]
+            window.raise_()
+            window.activateWindow()
+            return window, False
+
+        profile = self._create_profile(project_key)
+        if profile is None:
+            showMessageDialog(
+                "Could not open project",
+                f"Failed to initialize web profile for:\n{resolved_path}",
+            )
+            return None, False
+
+        window = self._project_window_cls(
+            project_key=project_key,
+            project_path=resolved_path,
+            profile=profile,
+            host=self.host,
+            port=self.port,
+            controller=self,
+        )
+        self.project_windows[project_key] = window
+        window.show()
+        return window, True
+
+    def open_project(self, path: str, descriptor: ViewDescriptor | None = None):
+        window, created = self.get_or_create_project_window(path)
+        if window is None:
+            return None
+
+        if descriptor is not None:
+            window.open_view(descriptor)
+        elif created:
+            window.open_view(default_overview_descriptor(window.project_key))
+        return window
+
+    def unregister_project_window(self, window: ProjectWindow):
+        self.project_windows.pop(window.project_key, None)
+
+    def mark_project_locally_closed(self, project_key: str):
+        self.open_projects.discard(project_key)
+        self._recently_closed.add(project_key)
+
+    # --- Server callback routing ---
+
+    def handle_server_message(self, item):
+        action, arguments = item
+        handler = getattr(self, f"_on_{action}", None)
+        if handler is not None:
+            handler(*arguments)
+        else:
+            logger.warning("Unknown server action: %s", action)
+
+    def _on_projectOpened(self, project_identifier: str):
+        project_key = self._canonicalize(project_identifier)
+        if project_key is not None:
+            self.open_projects.add(project_key)
+
+    def _on_projectClosed(self, project_identifier: str):
+        project_key = self._canonicalize(project_identifier)
+        if project_key is None:
+            return
+        if project_key in self._recently_closed:
+            self._recently_closed.discard(project_key)
+        else:
+            self.open_projects.discard(project_key)
+
+    def _on_exportAs(self, project_identifier: str, options: dict):
+        project_key = self._canonicalize(project_identifier)
+        if project_key is None:
+            return
+        if self._export_callback is not None:
+            self._export_callback(project_key, options)
+
+    def set_export_callback(self, callback):
+        self._export_callback = callback
+
+    def _canonicalize(self, project_identifier: str) -> str | None:
+        try:
+            return canonical_callback_project_key(project_identifier)
+        except Exception:
+            logger.warning("Failed to canonicalize: %s", project_identifier)
+            return None
+
+    # --- Profile management ---
+
+    def _create_profile(self, project_key: str) -> QWebEngineProfile | None:
+        try:
+            if self._profile_factory is not None:
+                return self._profile_factory(project_key)
+
+            dir_name = project_key_to_profile_dir_name(project_key)
+            app_data = QStandardPaths.writableLocation(
+                QStandardPaths.StandardLocation.AppDataLocation
+            )
+            profile_path = os.path.join(app_data, "webprofiles", dir_name)
+            os.makedirs(profile_path, exist_ok=True)
+            profile = QWebEngineProfile(dir_name, None)
+            profile.setPersistentStoragePath(profile_path)
+            profile.setCachePath(os.path.join(profile_path, "cache"))
+            return profile
+        except Exception:
+            logger.exception("Failed to create web profile for %s", project_key)
+            return None
+
+    # --- Quit handling ---
+
+    def has_open_projects(self) -> bool:
+        return bool(self.open_projects)
+
+    def begin_bulk_shutdown(self):
+        for window in list(self.project_windows.values()):
+            window.suppress_close_confirm()
+
+    def close_all_project_windows(self):
+        for window in list(self.project_windows.values()):
+            window.close()
+
+    def notify_server_lost(self):
+        for window in self.project_windows.values():
+            window.show_connection_lost()
+```
+
+- [ ] **Step 4: Run tests - they should pass**
+
+Run: `pytest tests/test_controller_callbacks.py -v`
+
+Expected: All PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add fontra_pak/controller.py tests/test_controller_callbacks.py
+git commit -m "feat: implement AppWorkspaceController"
+```
+
+### Task 22A: Revised Launcher Integration
+
+**Files:**
+- Modify: `fontra_pak/launcher.py`
+
+This task makes four specific edits to `launcher.py`. Each edit is described as an exact string replacement.
+
+- [ ] **Step 1: Change the `FontraMainWidget.__init__` signature to accept a controller**
+
+Find this line in `fontra_pak/launcher.py`:
+
+```python
+    def __init__(self, port):
+        super().__init__()
+        self.port = port
+        self.openProjects = set()
+```
+
+Replace it with:
+
+```python
+    def __init__(self, port, controller=None):
+        super().__init__()
+        self.port = port
+        self.controller = controller
+        self.openProjects = set()
+```
+
+- [ ] **Step 2: Change `dropEvent` to route through the controller**
+
+Find:
+
+```python
+    def dropEvent(self, event):
+        self.label.setStyleSheet(neutralCSS)
+        files = [u.toLocalFile() for u in event.mimeData().urls()]
+        for path in files:
+            openFile(path, self.port)
+        event.acceptProposedAction()
+```
+
+Replace with:
+
+```python
+    def dropEvent(self, event):
+        self.label.setStyleSheet(neutralCSS)
+        files = [u.toLocalFile() for u in event.mimeData().urls()]
+        for path in files:
+            if self.controller is not None:
+                self.controller.open_project(path)
+            else:
+                openFile(path, self.port)
+        event.acceptProposedAction()
+```
+
+- [ ] **Step 3: Change `newFont` to route through the controller**
+
+Find this block at the end of the `newFont` method:
+
+```python
+        if os.path.exists(fontPath):
+            openFile(fontPath, self.port)
+```
+
+Replace with:
+
+```python
+        if os.path.exists(fontPath):
+            if self.controller is not None:
+                self.controller.open_project(fontPath)
+            else:
+                openFile(fontPath, self.port)
+```
+
+- [ ] **Step 4: Change `closeEvent` to use the controller for quit handling**
+
+Find:
+
+```python
+    def closeEvent(self, event):
+        if self.openProjects:
+            response = showMessageDialog(
+                "There are still open fonts, are you sure you want to quit?",
+                "Quitting Fontra Pak will cause open browser tabs to stop working.",
+                buttons=QMessageBox.StandardButton.Close
+                | QMessageBox.StandardButton.Cancel,
+                defaultButton=QMessageBox.StandardButton.Cancel,
+            )
+            if response == QMessageBox.StandardButton.Cancel:
+                event.ignore()
+
+        self.settings.setValue("size", self.size())
+        self.settings.setValue("pos", self.pos())
+```
+
+Replace with:
+
+```python
+    def closeEvent(self, event):
+        has_open = (
+            self.controller.has_open_projects()
+            if self.controller is not None
+            else bool(self.openProjects)
+        )
+        if has_open:
+            response = showMessageDialog(
+                "There are still open fonts, are you sure you want to quit?",
+                "Quitting Fontra Pak will close all project windows.",
+                buttons=QMessageBox.StandardButton.Close
+                | QMessageBox.StandardButton.Cancel,
+                defaultButton=QMessageBox.StandardButton.Cancel,
+            )
+            if response == QMessageBox.StandardButton.Cancel:
+                event.ignore()
+                return
+
+            if self.controller is not None:
+                self.controller.begin_bulk_shutdown()
+                self.controller.close_all_project_windows()
+
+        self.settings.setValue("size", self.size())
+        self.settings.setValue("pos", self.pos())
+```
+
+- [ ] **Step 5: Verify both launcher entry paths**
+
+Run: `python -m fontra_pak`
+
+Manual checks:
+1. Drag a project into the launcher and verify it opens in a native project window.
+2. Use `New Font...`, create a project, and verify the newly created project also opens in a native project window.
+3. Close the launcher while project windows are open and verify the bulk-shutdown confirmation closes the whole workspace instead of leaving orphaned windows.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add fontra_pak/launcher.py
+git commit -m "feat: wire controller into launcher (drop, newFont, closeEvent)"
 ```
 
 ### Task 19: Implement WorkspacePane
@@ -2700,6 +3565,306 @@ Then add this method to the `AppWorkspaceController` class, after the `close_all
 ```bash
 git add fontra_pak/controller.py
 git commit -m "feat: add save_workspace to controller"
+```
+
+## 2026-04-03 Revision Block B
+
+Task 25 remains valid. The following tasks supersede the original Task 26 and Task 27 definitions below. Execute this revised restore block and ignore the original Task 26 and Task 27 versions later in the file.
+
+### Task 26A: Revised restore_workspace and restore tests
+
+**Files:**
+- Modify: `fontra_pak/controller.py`
+- Create: `tests/test_controller_restore.py`
+
+- [ ] **Step 1: Write failing restore tests**
+
+```python
+# tests/test_controller_restore.py
+from fontra_pak.controller import AppWorkspaceController
+from fontra_pak.persistence import serialize_project_record, serialize_workspace
+from fontra_pak.project_identity import path_to_project_key
+from fontra_pak.view_descriptor import ViewDescriptor, default_overview_descriptor
+
+
+class FakeSettings:
+    def __init__(self, workspace_payload=None):
+        self._values = {}
+        if workspace_payload is not None:
+            self._values["workspace"] = workspace_payload
+
+    def value(self, key, default=None):
+        return self._values.get(key, default)
+
+    def setValue(self, key, value):
+        self._values[key] = value
+
+    def remove(self, key):
+        self._values.pop(key, None)
+
+
+class FakeWindow:
+    def __init__(self, **kwargs):
+        self.project_key = kwargs["project_key"]
+        self.project_path = kwargs["project_path"]
+        self.profile = kwargs["profile"]
+        self.opened_descriptors = []
+        self.restored_geometry = None
+        self.restored_state = None
+        self.focused_pane_instance_id = None
+
+    def show(self):
+        pass
+
+    def raise_(self):
+        pass
+
+    def activateWindow(self):
+        pass
+
+    def open_view(self, descriptor, pane_instance_id=None):
+        self.opened_descriptors.append((descriptor, pane_instance_id))
+
+    def restoreGeometry(self, value):
+        self.restored_geometry = value
+        return True
+
+    def restoreState(self, value):
+        self.restored_state = value
+        return True
+
+    def focus_pane_instance(self, pane_instance_id):
+        self.focused_pane_instance_id = pane_instance_id
+        return True
+
+    def suppress_close_confirm(self):
+        pass
+
+    def close(self):
+        pass
+
+    def show_connection_lost(self):
+        pass
+
+
+def make_controller():
+    created_windows = []
+
+    def fake_window_cls(**kwargs):
+        window = FakeWindow(**kwargs)
+        created_windows.append(window)
+        return window
+
+    controller = AppWorkspaceController(
+        "localhost",
+        8080,
+        project_window_cls=fake_window_cls,
+        profile_factory=lambda _project_key: object(),
+    )
+    return controller, created_windows
+
+
+def test_restore_workspace_recreates_all_saved_panes(tmp_path):
+    controller, created_windows = make_controller()
+    project_path = tmp_path / "Demo.ufo"
+    project_path.touch()
+    project_key = path_to_project_key(str(project_path))
+    workspace_payload = serialize_workspace(
+        {
+            "projects": [
+                serialize_project_record(
+                    project_key=project_key,
+                    project_path=str(project_path),
+                    active_pane_instance_id="pane-2",
+                    pane_records=[
+                        {
+                            "pane_instance_id": "pane-1",
+                            "descriptor": ViewDescriptor.for_editor(
+                                project_key,
+                                route_hash="#glyph=A",
+                            ).to_dict(),
+                        },
+                        {
+                            "pane_instance_id": "pane-2",
+                            "descriptor": ViewDescriptor.for_fontinfo(
+                                project_key,
+                                route_hash="#axes",
+                            ).to_dict(),
+                        },
+                    ],
+                    geometry=b"geom",
+                    dock_state=b"dock",
+                )
+            ]
+        }
+    )
+
+    errors = controller.restore_workspace(FakeSettings(workspace_payload))
+
+    assert errors == []
+    assert len(created_windows) == 1
+    assert created_windows[0].opened_descriptors == [
+        (ViewDescriptor.for_editor(project_key, route_hash="#glyph=A"), "pane-1"),
+        (ViewDescriptor.for_fontinfo(project_key, route_hash="#axes"), "pane-2"),
+    ]
+    assert created_windows[0].focused_pane_instance_id == "pane-2"
+
+
+def test_restore_workspace_falls_back_to_overview_when_all_descriptors_invalid(tmp_path):
+    controller, created_windows = make_controller()
+    project_path = tmp_path / "Demo.ufo"
+    project_path.touch()
+    project_key = path_to_project_key(str(project_path))
+    workspace_payload = serialize_workspace(
+        {
+            "projects": [
+                serialize_project_record(
+                    project_key=project_key,
+                    project_path=str(project_path),
+                    active_pane_instance_id=None,
+                    pane_records=[
+                        {
+                            "pane_instance_id": "pane-1",
+                            "descriptor": {
+                                "project_key": project_key,
+                                "view_kind": "unknown",
+                                "page_path": "/bad.html",
+                                "route_hash": "",
+                                "title_hint": "Bad",
+                            },
+                        }
+                    ],
+                    geometry=b"geom",
+                    dock_state=b"dock",
+                )
+            ]
+        }
+    )
+
+    errors = controller.restore_workspace(FakeSettings(workspace_payload))
+
+    assert len(created_windows) == 1
+    assert created_windows[0].opened_descriptors == [
+        (default_overview_descriptor(project_key), None)
+    ]
+    assert errors == [
+        f"No valid pane descriptors were saved for {project_path}; reopening overview."
+    ]
+```
+
+- [ ] **Step 2: Run tests - they should fail**
+
+Run: `pytest tests/test_controller_restore.py -v`
+
+Expected: `AttributeError: 'AppWorkspaceController' object has no attribute 'restore_workspace'`
+
+- [ ] **Step 3: Add restore imports and `restore_workspace()` to `fontra_pak/controller.py`**
+
+Add these imports near the top of `fontra_pak/controller.py`:
+
+```python
+from fontra_pak.persistence import deserialize_project_record, deserialize_workspace, validate_pane_record
+```
+
+Then add this method after `save_workspace()` if you already completed Task 25, otherwise add it after `notify_server_lost()` and move it next to `save_workspace()` when reconciling the file:
+
+```python
+    def restore_workspace(self, settings) -> list[str]:
+        errors = []
+        raw = settings.value("workspace", None)
+        if raw is None:
+            return errors
+
+        workspace = deserialize_workspace(raw)
+        if workspace is None:
+            errors.append("Saved workspace was unreadable. Starting clean.")
+            settings.remove("workspace")
+            return errors
+
+        for project_data in workspace["projects"]:
+            record = deserialize_project_record(project_data)
+            if record is None:
+                errors.append("Corrupt project record, skipped.")
+                continue
+
+            project_path = record["project_path"]
+            if not os.path.exists(project_path):
+                errors.append(f"Project path no longer exists: {project_path}")
+                continue
+
+            window, _created = self.get_or_create_project_window(project_path)
+            if window is None:
+                errors.append(f"Failed to restore {project_path}: project window could not be created")
+                continue
+
+            try:
+                window.restoreGeometry(record["geometry"])
+            except Exception:
+                errors.append(f"Failed to restore geometry for {project_path}")
+
+            valid_panes = []
+            for pane_record in record["pane_records"]:
+                descriptor = validate_pane_record(pane_record)
+                if descriptor is not None:
+                    valid_panes.append((descriptor, pane_record.get("pane_instance_id")))
+
+            if not valid_panes:
+                errors.append(
+                    f"No valid pane descriptors were saved for {project_path}; reopening overview."
+                )
+                window.open_view(default_overview_descriptor(window.project_key))
+            else:
+                for descriptor, pane_instance_id in valid_panes:
+                    window.open_view(descriptor, pane_instance_id=pane_instance_id)
+
+            try:
+                window.restoreState(record["dock_state"])
+            except Exception:
+                errors.append(f"Failed to restore dock layout for {project_path}")
+
+            target_id = record["active_pane_instance_id"]
+            if target_id and not window.focus_pane_instance(target_id):
+                errors.append(f"Saved active pane was missing for {project_path}")
+
+        return errors
+```
+
+- [ ] **Step 4: Run tests - they should pass**
+
+Run: `pytest tests/test_controller_restore.py -v`
+
+Expected: All PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add fontra_pak/controller.py tests/test_controller_restore.py
+git commit -m "feat: restore saved panes without losing the first descriptor"
+```
+
+### Task 27A: Revised app-level restore verification
+
+**Files:**
+- Modify: `fontra_pak/app.py`
+
+Use the original Task 27 code edits, but replace the manual verification checklist with the one below so restore is validated against the bug that prompted this revision.
+
+- [ ] **Step 1: Verify save and restore preserve the first pane**
+
+Run: `python -m fontra_pak`
+
+Manual checks:
+1. Open a project and navigate the only pane from overview to an editor route such as `#glyph=A`.
+2. Open a second pane such as `Font Info`.
+3. Quit the app cleanly.
+4. Re-launch: `python -m fontra_pak`
+5. The first restored pane should still be the editor route, the second pane should still be `Font Info`, and the previously active pane should be focused.
+
+- [ ] **Step 2: Keep the original Task 27 commit step**
+
+```bash
+git add fontra_pak/app.py
+git commit -m "feat: wire workspace save/restore into app lifecycle"
 ```
 
 ### Task 26: Add restore_workspace to the controller
